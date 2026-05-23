@@ -1,0 +1,46 @@
+{
+  "name": "unblock_cli",
+  "version": "0.0.0",
+  "description": "Standalone `unblock` command-line binary for UNBLOCK. Distributed via npm. Wraps unblock_sdk to expose all 12 substrate verbs as subcommands.",
+  "keywords": ["unblock", "cli", "command-line", "tool"],
+  "license": "Apache-2.0",
+  "author": "Kaeva Labs <dev@kaeva.app>",
+  "type": "module",
+  "main": "./dist/main.js",
+  "bin": {
+    "unblock": "./dist/main.js"
+  },
+  "exports": null,
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@10.30.0",
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo coverage",
+    "prepublishOnly": "pnpm clean && pnpm build && pnpm test && pnpm lint"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "ora": "^8.1.0",
+    "prompts": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/prompts": "^2.4.0",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
