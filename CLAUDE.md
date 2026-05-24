@@ -2,6 +2,18 @@
 
 Auto-loaded by Claude Code when working in this repo. Read before every edit.
 
+## The vision (what this is FOR)
+
+**UNBLOCK is the organizational brain.** Organizations today don't have brains — every brain is individual, so context evaporates at the boundary of people's heads. Managers repeat themselves; knowledge dies when employees leave; executives broadcast strategy 50 times before it lands; new members onboard from zero; every AI agent dropped into an org needs full context re-explanation. UNBLOCK gives the *organization itself* memory, learning, continuity, and economic agency.
+
+Members (humans + agents) are *neurons* contributing to and reading from the org's brain. When a member leaves, their thoughts stay in the brain; only their personal scope leaves. New members inherit the full cognitive state on day one.
+
+**Every decision in this polyrepo should be evaluated against:** *does this preserve or strengthen the org-brain?* Not just "does it ship" or "does it scale." If a choice optimizes for individual scope at the cost of collective coherence, it's the wrong choice.
+
+This polyrepo is one organ in that brain (see the next section for which organ). The architectural mechanics — 1 enterprise = 1 Supabase project, 4-tier Org→Group→Team→Member hierarchy, EIP-1271 + macaroons, outcome-trace DAG, brain-operations taxonomy, token-only marketplace — are all *consequences* of the org-brain thesis, not arbitrary choices.
+
+Full thesis: `~/.claude/projects/C--Users-12066/memory/project_unblock_vision_organizational_brain_20260524.md`. TAM = every org that exists. Metric of success = no one ever has to re-explain context to a new member of the org.
+
 ## What this polyrepo is
 
 The `unblock` bin. Exposes verbs to humans and AI personas: `chat`, `say`, `dm`, `ask`, `remember`, `query`, `login`, `whoami`. Thin wrapper over `unblock_sdk` plus a TTY REPL.
