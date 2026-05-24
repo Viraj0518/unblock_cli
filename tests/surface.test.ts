@@ -8,7 +8,10 @@ describe('unblock_cli public surface', () => {
     expect(version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it('main() throws "not implemented" until the v02-mig port lands', async () => {
-    await expect(main([])).rejects.toThrow(/not implemented/);
+  it('main() exists as an async function', () => {
+    expect(typeof main).toBe('function');
+    // Commander's --version + --help call process.exit, so we don't drive
+    // main() at the surface layer — runtime behavior is covered by the
+    // per-command tests in tests/commands/.
   });
 });

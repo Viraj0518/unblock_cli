@@ -1,7 +1,7 @@
 {
   "name": "unblock_cli",
-  "version": "0.0.0",
-  "description": "Standalone `unblock` command-line binary for UNBLOCK. Distributed via npm. Wraps unblock_sdk to expose all 12 substrate verbs as subcommands.",
+  "version": "0.1.0",
+  "description": "Standalone `unblock` command-line binary for UNBLOCK. Distributed via npm. Exposes comms (chat/say/dm/ask), substrate (remember/query), and auth (login/whoami/logout) over NATS + HTTP.",
   "keywords": [
     "unblock",
     "cli",
@@ -9,7 +9,7 @@
     "tool"
   ],
   "license": "Apache-2.0",
-  "author": "Kaeva Labs <dev@kaeva.app>",
+  "author": "Viraj-Alpha <virajsharma@kaeva.app>",
   "type": "module",
   "main": "./dist/main.js",
   "bin": {
@@ -30,15 +30,18 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
+    "check-boundaries": "node scripts/check-boundaries.mjs",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo coverage",
-    "prepublishOnly": "pnpm clean && pnpm build && pnpm test && pnpm lint"
+    "prepublishOnly": "pnpm clean && pnpm build && pnpm test && pnpm lint && pnpm check-boundaries"
   },
   "dependencies": {
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
-    "ora": "^8.1.0",
     "prompts": "^2.4.0"
+  },
+  "optionalDependencies": {
+    "nats": "^2.28.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
