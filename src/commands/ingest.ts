@@ -262,14 +262,18 @@ async function rememberChunk(
   _scope: 'private' | 'team' | 'public',
   _continueOnError: boolean,
 ): Promise<RememberOutcome> {
-  // Today the SubstrateClient.remember surface only accepts
-  // (content, tags?, parentBlockId?). The richer metadata (chunk_index,
-  // source_uri, etc.) needs the auth-issuer's /v1/remember to grow a
-  // `metadata` field — tracked as open question 5 in the deliverable.
-  // For now we pass content; downstream filtering won't be able to
-  // query by chunk_index until that lands.
+  // Per unblock_protocol ADR-0005 / v3.1.1, the SubstrateClient.remember
+  // surface accepts a `metadata` field that maps directly to
+  // `blocks.metadata JSONB`. We forward the chunk's full metadata bag —
+  // `source_uri`, `chunk_index`, `document_id`, `role`, `session_id`,
+  // `frontmatter_*`, etc., whatever the per-format reader produced —
+  // verbatim. The org-brain can then query "show me what I learned from
+  // Tuesday's Claude session" because every block carries its origin.
   try {
-    await client.remember({ content: chunk.content });
+    await client.remember({
+      content: chunk.content,
+      metadata: chunk.metadata,
+    });
     return { kind: 'ingested', message: '' };
   } catch (err) {
     return { kind: 'error', message: errMsg(err) };

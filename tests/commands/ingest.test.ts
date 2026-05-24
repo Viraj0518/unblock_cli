@@ -145,6 +145,31 @@ describe('runIngest', () => {
     expect(stdout.join('')).toContain('TOTAL');
   });
 
+  // Protocol v3.1.1 / ADR-0005 — the ingest call MUST forward each chunk's
+  // metadata (source_uri, document_id, chunk_index, etc.) into the
+  // remember call so the org-brain can surface provenance at query time.
+  it('forwards chunk metadata into the remember call (ADR-0005 provenance)', async () => {
+    const { factory, state } = createMockSubstrateFactory();
+    state.rememberResponse = { blockId: 'blk_y', storedAt: 't' };
+    const fs = makeFs({ '/tmp/note.md': 'tuesday plan' });
+    await runIngest(
+      {
+        substrateFactory: factory,
+        substrateIngest: stubSubstrate,
+        fs,
+        stdout: () => undefined,
+      },
+      { path: '/tmp/note.md' },
+    );
+    expect(state.rememberCalls).toHaveLength(1);
+    const call = state.rememberCalls[0]!;
+    expect(call.metadata).toBeDefined();
+    expect(call.metadata?.['source_uri']).toBe(path.resolve('/tmp/note.md'));
+    expect(call.metadata?.['document_id']).toContain('stub::');
+    // chunker added by the stub above
+    expect(call.metadata?.['chunk_index']).toBe(0);
+  });
+
   it('directory non-recursive: ingests only top-level files matching ext', async () => {
     const { factory, state } = createMockSubstrateFactory();
     state.rememberResponse = { blockId: 'blk_x', storedAt: 't' };

@@ -77,6 +77,15 @@ export interface RememberInput {
   readonly content: string;
   readonly tags?: readonly string[];
   readonly parentBlockId?: string;
+  /**
+   * Provenance + caller-side context. Free-form record persisted to
+   * `blocks.metadata JSONB`. Used by the ingest pipeline to attach
+   * chunk-level attribution (source_uri, chunk_index, role, session_id,
+   * frontmatter_*) so the org-brain can answer "show me what I learned
+   * from Tuesday's Claude session". Top-level MUST be an object.
+   * See unblock_protocol ADR-0005 / v3.1.1.
+   */
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface RememberResult {
