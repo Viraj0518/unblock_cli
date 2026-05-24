@@ -18,6 +18,7 @@ import { runWhoami } from './commands/whoami.js';
 import { runRemember } from './commands/remember.js';
 import { runQuery } from './commands/query.js';
 import { runIngest } from './commands/ingest.js';
+import { runEval, type EvalBench } from './commands/eval.js';
 import { createNatsFactory } from './comms/nats-client.js';
 import { createHttpSubstrateFactory } from './sdk/http-substrate.js';
 import { shortenDid } from './auth/did.js';
@@ -215,6 +216,42 @@ function buildProgram(): Command {
       if (result.totalErrors > 0 && opts['continueOnError'] !== true) {
         process.exitCode = 1;
       }
+    });
+
+  // ─── eval ─────────────────────────────────────────────────────────────────
+  program
+    .command('eval <bench>')
+    .description(
+      'Run a substrate benchmark (locomo10 | longmemeval | all) and write results ' +
+        'to ~/.unblock/eval-<bench>-<ts>.json. Per LT-6 (YC lock-in tests): honest ' +
+        'baseline numbers + reproducibility kit.',
+    )
+    .option(
+      '--strategy <s>',
+      'sample strategy: full | stratified:N (default stratified:10 per category)',
+    )
+    .option('--data-locomo <path>', 'override path to locomo10.json (defaults to packaged fixture)')
+    .option('--data-longmemeval <path>', 'override path to LongMemEval JSON (defaults to packaged fixture)')
+    .option('--out <dir>', 'output directory for the JSON report (default ~/.unblock/)')
+    .option('--synth <mode>', 'synth LLM: none | openai (default none — retrieval-only baseline)')
+    .option('--judge <mode>', 'judge LLM: noop | openai (default noop — plumbing only)')
+    .action(async (bench: string, opts: Record<string, unknown>) => {
+      if (bench !== 'locomo10' && bench !== 'longmemeval' && bench !== 'all') {
+        process.stderr.write(`unknown bench '${bench}' (expected locomo10 | longmemeval | all)\n`);
+        process.exitCode = 1;
+        return;
+      }
+      const evalOpts = {
+        bench: bench as EvalBench,
+        ...(typeof opts['strategy'] === 'string' ? { strategy: opts['strategy'] } : {}),
+        ...(typeof opts['dataLocomo'] === 'string' ? { dataLocomo: opts['dataLocomo'] } : {}),
+        ...(typeof opts['dataLongmemeval'] === 'string' ? { dataLongmemeval: opts['dataLongmemeval'] } : {}),
+        ...(typeof opts['out'] === 'string' ? { out: opts['out'] } : {}),
+        ...(typeof opts['synth'] === 'string' ? { synth: opts['synth'] } : {}),
+        ...(typeof opts['judge'] === 'string' ? { judge: opts['judge'] } : {}),
+      };
+      const result = await runEval({}, evalOpts);
+      process.exitCode = result.exitCode;
     });
 
   program
