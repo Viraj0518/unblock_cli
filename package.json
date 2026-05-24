@@ -2,7 +2,12 @@
   "name": "unblock_cli",
   "version": "0.0.0",
   "description": "Standalone `unblock` command-line binary for UNBLOCK. Distributed via npm. Wraps unblock_sdk to expose all 12 substrate verbs as subcommands.",
-  "keywords": ["unblock", "cli", "command-line", "tool"],
+  "keywords": [
+    "unblock",
+    "cli",
+    "command-line",
+    "tool"
+  ],
   "license": "Apache-2.0",
   "author": "Kaeva Labs <dev@kaeva.app>",
   "type": "module",
@@ -11,7 +16,11 @@
     "unblock": "./dist/main.js"
   },
   "exports": null,
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
@@ -38,7 +47,8 @@
     "@typescript-eslint/parser": "^8.20.0",
     "eslint": "^9.18.0",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "vite": "^6.4.2",
+    "vitest": "^3.0.0"
   },
   "publishConfig": {
     "access": "public"
