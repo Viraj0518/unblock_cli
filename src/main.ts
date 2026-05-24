@@ -17,6 +17,7 @@ import { runLogout } from './commands/logout.js';
 import { runWhoami } from './commands/whoami.js';
 import { runRemember } from './commands/remember.js';
 import { runQuery } from './commands/query.js';
+import { runIngest } from './commands/ingest.js';
 import { createNatsFactory } from './comms/nats-client.js';
 import { createHttpSubstrateFactory } from './sdk/http-substrate.js';
 import { shortenDid } from './auth/did.js';
@@ -178,6 +179,42 @@ function buildProgram(): Command {
         },
       );
       process.stdout.write(`${result.blockId}\n`);
+    });
+
+  program
+    .command('ingest <path>')
+    .description(
+      'Bulk-load a file or directory into the org-brain. Walks the FS, chunks via substrate, ' +
+        'pipes each chunk through /v1/remember. Critical for the YC demo: pre-load existing ' +
+        'Claude conversation history + memory files so the brain isn\'t amnesiac on day 1.',
+    )
+    .option('--recursive', 'walk subdirectories when <path> is a directory', false)
+    .option('--format <name>', 'force reader by name (markdown | claude-jsonl | text); auto if absent')
+    .option('--scope <scope>', 'private | team | public (default: private)')
+    .option('--dry-run', 'parse + chunk but skip writes', false)
+    .option('--concurrency <n>', 'parallel remember batches (default 1)', (v) => Number.parseInt(v, 10))
+    .option('--continue-on-error', 'do not halt on per-file errors', false)
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (p: string, opts: Record<string, unknown>) => {
+      const result = await runIngest(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          path: p,
+          recursive: opts['recursive'] === true,
+          dryRun: opts['dryRun'] === true,
+          continueOnError: opts['continueOnError'] === true,
+          ...(typeof opts['format'] === 'string' ? { format: opts['format'] } : {}),
+          ...(typeof opts['scope'] === 'string'
+            ? { scope: opts['scope'] as 'private' | 'team' | 'public' }
+            : {}),
+          ...(typeof opts['concurrency'] === 'number' ? { concurrency: opts['concurrency'] } : {}),
+        },
+      );
+      // Non-zero exit if any file errored and we weren't in continue-on-error mode.
+      if (result.totalErrors > 0 && opts['continueOnError'] !== true) {
+        process.exitCode = 1;
+      }
     });
 
   program
