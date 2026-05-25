@@ -19,6 +19,13 @@ import { runRemember } from './commands/remember.js';
 import { runQuery } from './commands/query.js';
 import { runIngest } from './commands/ingest.js';
 import { runEval, type EvalBench } from './commands/eval.js';
+import {
+  cmdProfileAdd,
+  cmdProfileList,
+  cmdProfileRm,
+  cmdProfileUse,
+  type ProfileResult,
+} from './profile/commands.js';
 import { createNatsFactory } from './comms/nats-client.js';
 import { createHttpSubstrateFactory } from './sdk/http-substrate.js';
 import { shortenDid } from './auth/did.js';
@@ -254,6 +261,52 @@ function buildProgram(): Command {
       process.exitCode = result.exitCode;
     });
 
+  // ─── profile ──────────────────────────────────────────────────────────────
+  const profile = program.command('profile').description('Manage named profiles (multi-persona tenancy on one workstation).');
+
+  profile
+    .command('add <name>')
+    .description('Add a profile. --api-key required (unb_<32hex>). --force overwrites.')
+    .requiredOption('--api-key <key>', 'API key for this profile')
+    .option('--catalog-api <url>', 'override catalog-api URL for this profile')
+    .option('--note <text>', 'free-form note')
+    .option('--force', 'overwrite if the profile already exists', false)
+    .action(async (name: string, opts: Record<string, unknown>) => {
+      const result = await cmdProfileAdd({
+        name,
+        apiKey: typeof opts['apiKey'] === 'string' ? opts['apiKey'] : '',
+        ...(typeof opts['catalogApi'] === 'string' ? { catalogApi: opts['catalogApi'] } : {}),
+        ...(typeof opts['note'] === 'string' ? { note: opts['note'] } : {}),
+        force: opts['force'] === true,
+      });
+      writeProfileResult(result);
+    });
+
+  profile
+    .command('list')
+    .description('List all profiles. --json emits the raw registry.')
+    .option('--json', 'machine-readable JSON', false)
+    .action(async (opts: Record<string, unknown>) => {
+      const result = await cmdProfileList({ json: opts['json'] === true });
+      writeProfileResult(result);
+    });
+
+  profile
+    .command('use <name>')
+    .description('Set the active profile.')
+    .action(async (name: string) => {
+      const result = await cmdProfileUse(name);
+      writeProfileResult(result);
+    });
+
+  profile
+    .command('rm <name>')
+    .description('Remove a profile and its per-profile state.')
+    .action(async (name: string) => {
+      const result = await cmdProfileRm(name);
+      writeProfileResult(result);
+    });
+
   program
     .command('query <q>')
     .description('Search the substrate. Prints hits as JSON (or one per line for piping).')
@@ -282,6 +335,12 @@ function buildProgram(): Command {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+function writeProfileResult(result: ProfileResult): void {
+  for (const line of result.stdout) process.stdout.write(`${line}\n`);
+  for (const line of result.stderr) process.stderr.write(`${line}\n`);
+  if (result.exitCode !== 0) process.exitCode = result.exitCode;
+}
 
 function configOverrides(opts: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
