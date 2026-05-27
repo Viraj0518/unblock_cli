@@ -26,15 +26,58 @@ import os from 'node:os';
 // ─── paths (computed lazily so tests can stub HOME) ──────────────────────────
 
 /**
- * Resolve the unblock home dir. Honors `UNBLOCK_HOME` for test injection.
- * Defaults to `~/.unblock` cross-platform.
+ * Process-level override for `unblockHome()`. Set by the CLI when the user
+ * supplies `--persona NAME` so the resolution becomes:
+ *
+ *   1. setPersonaDirOverride(dir)      — explicit programmatic / --persona flag
+ *   2. process.env.UNBLOCK_HOME        — env var (test injection + power users)
+ *   3. ~/.unblock                      — built-in default
+ *
+ * Kept module-scoped (vs threaded through every function arg) so the existing
+ * `readIdentity()` / `writeCommsCreds()` etc. surface stays unchanged. Tests
+ * still use `UNBLOCK_HOME` via the tmp-home fixture; the override is for the
+ * CLI's `--persona NAME` plumbing.
+ */
+let personaDirOverride: string | null = null;
+
+/**
+ * Force every subsequent `unblockHome()` call to resolve to `dir`.
+ * Pass `null` to clear the override (test cleanup).
+ *
+ * Higher priority than `process.env.UNBLOCK_HOME` so a CLI flag wins over
+ * a stale env var inherited from a shell that was logged-in under a
+ * different persona.
+ */
+export function setPersonaDirOverride(dir: string | null): void {
+  personaDirOverride = dir;
+}
+
+/**
+ * Resolve the unblock home dir. Priority:
+ *   1. setPersonaDirOverride(dir) (CLI's --persona flag)
+ *   2. process.env.UNBLOCK_HOME
+ *   3. ~/.unblock
  */
 export function unblockHome(): string {
+  if (personaDirOverride !== null && personaDirOverride.trim() !== '') {
+    return personaDirOverride;
+  }
   const override = process.env['UNBLOCK_HOME'];
   if (override !== undefined && override.trim() !== '') {
     return override;
   }
   return path.join(os.homedir(), '.unblock');
+}
+
+/**
+ * Map a persona NAME to its canonical home dir:
+ *   ~/.unblock-personas/<NAME>/
+ *
+ * Matches `mint`'s `resolvePersonaDir()` behavior so a `mint --persona NAME`
+ * followed by `login --persona NAME` write to / read from the same dir.
+ */
+export function personaHomeFor(personaName: string): string {
+  return path.join(os.homedir(), '.unblock-personas', personaName);
 }
 
 export function identityPath(): string {

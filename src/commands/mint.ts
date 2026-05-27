@@ -23,13 +23,13 @@
  */
 
 import path from 'node:path';
-import os from 'node:os';
 import { mkdir, writeFile } from 'node:fs/promises';
 import {
   readIdentity,
   writeCommsCreds,
   writeCommsEnv,
   unblockHome,
+  personaHomeFor,
 } from '../auth/persona-store.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
 
@@ -129,7 +129,7 @@ export async function runMint(deps: MintDeps, opts: MintOptions): Promise<MintRe
 
   if (opts.print !== true) {
     // Ensure persona dir exists for multi-persona layout
-    const personaDir = resolvePersonaDir(personaName);
+    const personaDir = personaHomeFor(personaName);
     await mkdir(personaDir, { recursive: true, mode: 0o700 });
 
     // Write creds with LF line endings (CRLF breaks nkeys — see landmines doc)
@@ -170,13 +170,6 @@ export async function runMint(deps: MintDeps, opts: MintOptions): Promise<MintRe
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-
-/** Resolve persona directory: ~/.unblock-personas/<NAME>/ or ~/.unblock/ if no name. */
-function resolvePersonaDir(personaName: string): string {
-  const home = os.homedir();
-  const personasRoot = path.join(home, '.unblock-personas');
-  return path.join(personasRoot, personaName);
-}
 
 /**
  * Parse TTL string to seconds.
