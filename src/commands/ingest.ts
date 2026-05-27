@@ -134,11 +134,14 @@ export async function runIngest(deps: IngestDeps, opts: IngestOptions): Promise<
 
   // 2. Substrate client — only constructed if we'll actually write. In
   //    dry-run mode we never hit the wire.
+  const apiKey = cfg.apiKey;
   const client = opts.dryRun === true
     ? undefined
     : deps.substrateFactory.create({
         authUrl: cfg.authUrl,
+        substrateUrl: cfg.substrateUrl,
         ...(deps.token !== undefined ? { token: deps.token } : {}),
+        ...(apiKey !== undefined ? { apiKey: async () => apiKey } : {}),
       });
 
   // 3. For each file: pick reader, read text, chunk, remember each chunk.

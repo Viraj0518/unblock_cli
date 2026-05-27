@@ -275,7 +275,22 @@ export interface EnrollResult {
   readonly expiresAt?: string;
 }
 
-/** Factory that builds a substrate client bound to an auth-issuer URL. */
+/** Factory that builds a substrate client bound to an auth-issuer URL.
+ *
+ * `authUrl` is the auth-issuer (used for `/v1/identity/enroll` only).
+ * `substrateUrl` is the substrate API (used for `/v1/remember`, `/v1/query`,
+ * `/v1/share`, etc.). When omitted, falls back to `authUrl` so callers that
+ * only need enrollment keep working.
+ *
+ * Auth precedence: `apiKey` (sent as `X-API-Key: unb_<hex>`, the substrate's
+ * native scheme) wins over `token` (sent as `Bearer …`, the auth-issuer's
+ * scheme). Substrate verbs require `apiKey`; enrollment uses neither.
+ */
 export interface SubstrateFactory {
-  create(options: { readonly authUrl: string; readonly token?: () => Promise<string> }): SubstrateClient;
+  create(options: {
+    readonly authUrl: string;
+    readonly substrateUrl?: string;
+    readonly token?: () => Promise<string>;
+    readonly apiKey?: () => Promise<string>;
+  }): SubstrateClient;
 }
