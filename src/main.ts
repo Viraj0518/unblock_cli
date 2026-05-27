@@ -29,6 +29,11 @@ import { runExtract } from './commands/extract.js';
 import { runForget } from './commands/forget.js';
 import { runIngest } from './commands/ingest.js';
 import { runEval, type EvalBench } from './commands/eval.js';
+import { runMint } from './commands/mint.js';
+import { runListen } from './commands/listen.js';
+import { runSend } from './commands/send.js';
+import { runTrace } from './commands/trace.js';
+import { runHealth, type ComponentName } from './commands/health.js';
 import {
   cmdProfileAdd,
   cmdProfileList,
@@ -101,6 +106,142 @@ function buildProgram(): Command {
         { commsFactory: createNatsFactory() },
         { ...configOverrides(opts), to, msg },
       );
+    });
+
+  // ─── X1: mint ────────────────────────────────────────────────────────────────
+  program
+    .command('mint')
+    .description(
+      'Re-mint fresh NATS credentials for a persona without a full invite-code flow. ' +
+        'Reads MACAROON_ROOT_SECRET from env or Supabase app_secrets. ' +
+        'Writes to ~/.unblock-personas/<NAME>/comms-v3.{creds,env} (LF line endings). ' +
+        'Exit 0 on success, 1 on error.',
+    )
+    .option('--persona <name>', 'persona name (default: current persona)')
+    .option('--ttl <duration>', 'credential TTL, e.g. 30d, 1h, 2592000 (default: 30d)')
+    .option('--print', 'print JSON to stdout, do not write files', false)
+    .option('--json', 'machine-readable JSON output', false)
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        const result = await runMint(
+          {},
+          {
+            ...configOverrides(opts),
+            ...(typeof opts['persona'] === 'string' ? { persona: opts['persona'] } : {}),
+            ...(typeof opts['ttl'] === 'string' ? { ttl: opts['ttl'] } : {}),
+            print: opts['print'] === true,
+          },
+        );
+        if (opts['json'] === true) {
+          process.stdout.write(`${JSON.stringify({
+            persona: result.persona,
+            did: result.did,
+            jwt_expires_at: result.jwtExpiresAt,
+            ttl_seconds: result.ttlSeconds,
+            creds_path: result.credsPath ?? null,
+            env_path: result.envPath ?? null,
+          }, null, 2)}\n`);
+        } else if (opts['print'] === true) {
+          process.stdout.write(`${result.natsCreds}`);
+        } else {
+          process.stdout.write(
+            `minted  ${result.persona}\n` +
+              `  did:      ${result.did}\n` +
+              `  expires:  ${result.jwtExpiresAt}\n` +
+              `  creds:    ${result.credsPath ?? '(not written)'}\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  // ─── X2: listen ──────────────────────────────────────────────────────────────
+  program
+    .command('listen')
+    .description(
+      'Long-running NATS subscribe. Default subject = current persona DM inbox. ' +
+        '--channel NAME subscribes to unblock.channel.<name>.>. ' +
+        'Exit 0 on Ctrl+C or timeout, 1 on auth failure.',
+    )
+    .option('--subject <pattern>', 'NATS subject filter (supports * and > wildcards)')
+    .option('--channel <name>', 'subscribe to unblock.channel.<name>.>')
+    .option('--filter <regex>', 'only print messages where body matches regex')
+    .option('--json', 'emit one JSON object per message', false)
+    .option('--timeout <sec>', 'exit after N seconds', (v) => Number.parseFloat(v))
+    .option('--name <handle>', 'display name override')
+    .option('--nats-url <url>', 'broker URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        const result = await runListen(
+          { commsFactory: createNatsFactory() },
+          {
+            ...configOverrides(opts),
+            ...(typeof opts['subject'] === 'string' ? { subject: opts['subject'] } : {}),
+            ...(typeof opts['channel'] === 'string' ? { channel: opts['channel'] } : {}),
+            ...(typeof opts['filter'] === 'string' ? { filter: opts['filter'] } : {}),
+            json: opts['json'] === true,
+            ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+          },
+        );
+        if (result.exitReason === 'timeout') process.exitCode = 0;
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  // ─── X4: send (dm with --ack) ─────────────────────────────────────────────────
+  program
+    .command('send <to> <msg>')
+    .description(
+      'Send a direct message. With --ack, waits for recipient acknowledgement ' +
+        'before exiting. Exit 0=ok, 2=ack-timeout, 1=error.',
+    )
+    .option('--ack', 'wait for recipient ack before exiting', false)
+    .option('--timeout <sec>', 'seconds to wait for ack (default 30)', (v) => Number.parseFloat(v))
+    .option('--json', 'machine-readable output', false)
+    .option('--name <handle>', 'display name override')
+    .option('--nats-url <url>', 'broker URL override')
+    .action(async (to: string, msg: string, opts: Record<string, unknown>) => {
+      try {
+        const result = await runSend(
+          { commsFactory: createNatsFactory() },
+          {
+            ...configOverrides(opts),
+            to,
+            msg,
+            ack: opts['ack'] === true,
+            ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+            json: opts['json'] === true,
+          },
+        );
+        if (opts['json'] === true) {
+          process.stdout.write(`${JSON.stringify({
+            to: result.to,
+            message_id: result.messageId,
+            ack_received: result.ackReceived ?? null,
+            ack_source: result.ackSource ?? null,
+            ts: result.ts,
+            elapsed_ms: result.elapsedMs,
+          }, null, 2)}\n`);
+        } else {
+          process.stdout.write(`message_id: ${result.messageId}\n`);
+          if (result.ackReceived !== undefined) {
+            process.stdout.write(
+              result.ackReceived
+                ? `ack: received from ${result.ackSource ?? 'unknown'} (${result.elapsedMs}ms)\n`
+                : `ack: timeout after ${result.elapsedMs}ms\n`,
+            );
+          }
+        }
+        process.exitCode = result.exitCode;
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
     });
 
   program
@@ -236,6 +377,110 @@ function buildProgram(): Command {
       );
       // Non-zero exit if any file errored and we weren't in continue-on-error mode.
       if (result.totalErrors > 0 && opts['continueOnError'] !== true) {
+        process.exitCode = 1;
+      }
+    });
+
+  // ─── X11: trace ──────────────────────────────────────────────────────────────
+  program
+    .command('trace <id>')
+    .description(
+      'Pull full audit chain for a correlation-id or message-id across ' +
+        'audit_events, dispatch_traces, and dispatch_rules. ' +
+        'Reads SUPABASE_SERVICE_ROLE_KEY from env or .env.demo.',
+    )
+    .option('--json', 'emit structured JSON', false)
+    .option('--supabase-url <url>', 'Supabase project URL override')
+    .option('--supabase-service-role-key <key>', 'service-role key override')
+    .action(async (id: string, opts: Record<string, unknown>) => {
+      try {
+        const result = await runTrace(
+          {},
+          {
+            id,
+            json: opts['json'] === true,
+            ...(typeof opts['supabaseUrl'] === 'string' ? { supabaseUrl: opts['supabaseUrl'] } : {}),
+            ...(typeof opts['supabaseServiceRoleKey'] === 'string'
+              ? { supabaseServiceRoleKey: opts['supabaseServiceRoleKey'] }
+              : {}),
+          },
+        );
+        if (opts['json'] === true) {
+          process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          if (result.rows.length === 0) {
+            process.stdout.write(`no events found for id: ${id}\n`);
+          } else {
+            process.stdout.write(
+              `ts                        component  action      actor                      outcome  payload\n`,
+            );
+            process.stdout.write(`${'─'.repeat(120)}\n`);
+            for (const row of result.rows) {
+              const ts = row.ts.slice(0, 23);
+              const snippet = row.payloadSnippet.slice(0, 40).replace(/\n/g, ' ');
+              process.stdout.write(
+                `${ts.padEnd(26)}${row.component.padEnd(11)}${row.action.padEnd(12)}${row.actorDid.slice(0, 26).padEnd(27)}${row.outcome.padEnd(9)}${snippet}\n`,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  // ─── X12: health ─────────────────────────────────────────────────────────────
+  program
+    .command('health')
+    .description(
+      'Synthetic health check: auth | broker | substrate | audit | all. ' +
+        'Exit 0 if all ok, 1 if any degraded/down.',
+    )
+    .option('--component <name>', 'auth | broker | substrate | audit | all (default: all)')
+    .option('--json', 'emit structured JSON', false)
+    .option('--supabase-url <url>', 'Supabase project URL override')
+    .option('--supabase-service-role-key <key>', 'Supabase service-role key')
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        const rawComponent = opts['component'];
+        const validComponents = ['auth', 'broker', 'substrate', 'audit', 'all'] as const;
+        const component: ComponentName | 'all' =
+          typeof rawComponent === 'string' && validComponents.includes(rawComponent as ComponentName | 'all')
+            ? (rawComponent as ComponentName | 'all')
+            : 'all';
+
+        const result = await runHealth(
+          { commsFactory: createNatsFactory() },
+          {
+            ...configOverrides(opts),
+            component,
+            json: opts['json'] === true,
+            ...(typeof opts['supabaseUrl'] === 'string' ? { supabaseUrl: opts['supabaseUrl'] } : {}),
+            ...(typeof opts['supabaseServiceRoleKey'] === 'string'
+              ? { supabaseServiceRoleKey: opts['supabaseServiceRoleKey'] }
+              : {}),
+          },
+        );
+
+        if (opts['json'] === true) {
+          process.stdout.write(`${JSON.stringify(result.components, null, 2)}\n`);
+        } else {
+          process.stdout.write(`${'component'.padEnd(12)}${'status'.padEnd(12)}${'latency_ms'.padEnd(14)}last_error\n`);
+          process.stdout.write(`${'─'.repeat(70)}\n`);
+          for (const c of result.components) {
+            const status = c.status === 'ok' ? 'ok' : c.status;
+            process.stdout.write(
+              `${c.component.padEnd(12)}${status.padEnd(12)}${String(c.latencyMs).padEnd(14)}${c.lastError ?? ''}\n`,
+            );
+          }
+        }
+
+        process.exitCode = result.allOk ? 0 : 1;
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
         process.exitCode = 1;
       }
     });
