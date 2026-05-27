@@ -5,6 +5,7 @@
 // runs when this file is loaded as the process entry point (i.e. as the `bin`
 // script), so importing this module from tests doesn't trigger process.exit.
 
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 import { Command } from 'commander';
@@ -374,12 +375,26 @@ function errMsg(err: unknown): string {
   return `error: ${String(err)}`;
 }
 
-// Only run as a process when invoked directly (as the bin script). Comparing
-// `import.meta.url` to `pathToFileURL(process.argv[1])` is the cross-platform
-// ESM idiom for "is this the entry point?" — handles Windows backslashes and
-// drive-letter prefixes correctly, unlike a naive string match.
-const entry = process.argv[1];
-const invokedDirectly = entry !== undefined && import.meta.url === pathToFileURL(entry).href;
+/**
+ * Detect whether `import.meta.url` belongs to the entry-point file.
+ * Resolves symlinks on `entry` because `npm link` (and `npm install -g`)
+ * install the bin via a symlink: `process.argv[1]` ends up at the symlink
+ * path while `import.meta.url` resolves to the real file path, so a naive
+ * URL compare returns false and `main()` never runs.
+ */
+export function isEntryPoint(importMetaUrl: string, entry: string | undefined): boolean {
+  if (entry === undefined) return false;
+  let resolved: string;
+  try {
+    resolved = realpathSync(entry);
+  } catch {
+    resolved = entry;
+  }
+  return importMetaUrl === pathToFileURL(resolved).href;
+}
+
+// Only run as a process when invoked directly (as the bin script).
+const invokedDirectly = isEntryPoint(import.meta.url, process.argv[1]);
 
 if (invokedDirectly) {
   main(process.argv.slice(2))
