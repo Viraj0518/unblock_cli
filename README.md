@@ -12,9 +12,9 @@ Scaffold. The entry point throws "not implemented"; real subcommand wiring ports
 
 ```bash
 pnpm add -g unblock_cli
-# or
-npm install -g unblock_cli
 ```
+
+> Note: Do not install via `npm install -g unblock_cli`. This repo uses `pnpm@10.30.0` as canonical package manager. Use `pnpm add -g` for global install or `pnpm install` for local dev.
 
 Then:
 
