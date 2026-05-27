@@ -3,8 +3,11 @@
  *
  * Flow:
  *   1. Mint a fresh did:key Ed25519 identity (writes ~/.unblock/identity.json).
- *   2. POST <authUrl>/v1/identity/enroll with { invite_code, did, agent_name }.
- *   3. Receive { nats_creds, nats_url, workspace_id, org_id, name, expires_at? }.
+ *   2. POST <authUrl>/v1/identity/enroll
+ *        headers: X-Invite-Code: <code>
+ *        body:    { human_did, ed25519_pubkey_hex }
+ *   3. Receive { user_jwt, creds_file_content, broker_url, workspace_id,
+ *               org_id, role, human_did, expires_at }.
  *   4. Write ~/.unblock/comms-v3.creds (chmod 600) + ~/.unblock/comms-v3.env.
  *
  * Idempotent on identity: if a persona identity already exists locally we
