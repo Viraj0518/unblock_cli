@@ -99,6 +99,139 @@ export interface QueryHit {
   readonly snippet: string;
 }
 
+// ─── Verb #3 — Share ─────────────────────────────────────────────────────────
+
+export interface ShareInput {
+  readonly blockId: string;
+  readonly recipient: string;
+  readonly permissions?: readonly string[];
+  /** Epoch seconds. */
+  readonly expiresAt?: number;
+}
+
+export interface ShareResult {
+  readonly shareId: string;
+  readonly blockId: string;
+}
+
+// ─── Verb #4 — List (marketplace) ────────────────────────────────────────────
+
+export interface ListInput {
+  readonly blockId: string;
+  readonly priceUnblock: number;
+  readonly tier?: number;
+  readonly royaltyShareWith?: ReadonlyArray<readonly [string, number]>;
+  readonly delistExisting?: boolean;
+  readonly summary?: string;
+}
+
+export interface ListResult {
+  readonly listingId: string;
+}
+
+// ─── Verb #5 — Purchase ───────────────────────────────────────────────────────
+
+export interface PurchaseInput {
+  readonly blockId?: string;
+  readonly listingId?: string;
+  readonly maxPrice?: number | null;
+  readonly paymentMethod?: 'wallet' | 'relay';
+  readonly walletName?: string;
+}
+
+export interface PurchaseResult {
+  readonly blockId: string;
+  readonly receiptId: string;
+}
+
+// ─── Verb #6 — Verify ─────────────────────────────────────────────────────────
+
+export interface VerifyInput {
+  readonly blockId?: string | null;
+  readonly contentHash?: string | null;
+  readonly signature?: string | null;
+}
+
+export interface VerifyResult {
+  readonly blockId: string;
+  readonly signatureValid: boolean;
+  readonly attestations: ReadonlyArray<{ readonly attesterId: string; readonly statement: string }>;
+}
+
+// ─── Verb #7 — Attest ─────────────────────────────────────────────────────────
+
+export interface AttestInput {
+  readonly blockId: string;
+  readonly score: number;
+  readonly attestationText?: string;
+  readonly signature?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface AttestResult {
+  readonly attestationId: string;
+}
+
+// ─── Verb #8 — Subscribe ──────────────────────────────────────────────────────
+
+export interface SubscribeInput {
+  readonly url: string;
+  readonly events: readonly string[];
+  readonly secret: string;
+  readonly filter?: Readonly<Record<string, unknown>>;
+  readonly active?: boolean;
+}
+
+export interface SubscribeResult {
+  readonly subscriptionId: string;
+}
+
+// ─── Verb #9 — Update ─────────────────────────────────────────────────────────
+
+export interface UpdateInput {
+  readonly blockId: string;
+  readonly content: unknown;
+  readonly rejectedAlternatives?: readonly string[];
+  readonly revisionReason?: string;
+  readonly tags?: readonly string[];
+  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly clientMsgId?: string;
+}
+
+export interface UpdateResult {
+  readonly blockId: string;
+  readonly contentHash: string;
+}
+
+// ─── Verb #10 — Extract ───────────────────────────────────────────────────────
+
+export interface ExtractInput {
+  readonly blockId?: string;
+  readonly query?: string;
+  readonly schema?: Readonly<Record<string, unknown>>;
+}
+
+export interface ExtractResult {
+  readonly facts: ReadonlyArray<Readonly<Record<string, unknown>>>;
+}
+
+// ─── Verb #11 — Forget ────────────────────────────────────────────────────────
+
+export interface ForgetInput {
+  readonly blockId: string;
+  readonly mode?: 'soft' | 'hard';
+  readonly reason?: string;
+  readonly gdprRequest?: boolean;
+}
+
+export interface ForgetResult {
+  readonly blockId: string;
+  readonly deletedAt: number;
+  readonly mode: 'soft' | 'hard';
+  readonly cascadeCount: number;
+  readonly hardDeleteEligibleAt: number | null;
+}
+
 /**
  * Substrate client — what the CLI needs from the auth-issuer + catalog-api.
  *
@@ -108,6 +241,15 @@ export interface QueryHit {
 export interface SubstrateClient {
   remember(input: RememberInput): Promise<RememberResult>;
   query(q: string, opts?: { readonly topK?: number }): Promise<readonly QueryHit[]>;
+  share(input: ShareInput): Promise<ShareResult>;
+  listMarketplace(input: ListInput): Promise<ListResult>;
+  purchase(input: PurchaseInput): Promise<PurchaseResult>;
+  verify(input: VerifyInput): Promise<VerifyResult>;
+  attest(input: AttestInput): Promise<AttestResult>;
+  subscribe(input: SubscribeInput): Promise<SubscribeResult>;
+  update(input: UpdateInput): Promise<UpdateResult>;
+  extract(input: ExtractInput): Promise<ExtractResult>;
+  forget(input: ForgetInput): Promise<ForgetResult>;
   /**
    * Enrollment endpoint — redeem an invite code for a User JWT + NATS creds.
    * Matches v02-mig's POST /v1/identity/enroll.

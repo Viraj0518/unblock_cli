@@ -18,6 +18,15 @@ import { runLogout } from './commands/logout.js';
 import { runWhoami } from './commands/whoami.js';
 import { runRemember } from './commands/remember.js';
 import { runQuery } from './commands/query.js';
+import { runShare } from './commands/share.js';
+import { runListMarketplace } from './commands/list-marketplace.js';
+import { runPurchase } from './commands/purchase.js';
+import { runVerify } from './commands/verify.js';
+import { runAttest } from './commands/attest.js';
+import { runSubscribe } from './commands/subscribe.js';
+import { runUpdate } from './commands/update.js';
+import { runExtract } from './commands/extract.js';
+import { runForget } from './commands/forget.js';
 import { runIngest } from './commands/ingest.js';
 import { runEval, type EvalBench } from './commands/eval.js';
 import {
@@ -52,7 +61,7 @@ function buildProgram(): Command {
   program
     .name('unblock')
     .description(
-      'UNBLOCK CLI — comms (chat/say/dm/ask), substrate (remember/query), auth (login/whoami/logout).',
+      'UNBLOCK CLI — comms (chat/say/dm/ask), substrate (remember/query/share/list/purchase/verify/attest/subscribe/update/extract/forget), auth (login/whoami/logout).',
     )
     .version(version, '-V, --version');
 
@@ -330,6 +339,288 @@ function buildProgram(): Command {
           process.stdout.write(`${h.blockId}\t${h.score.toFixed(4)}\t${h.snippet}\n`);
         }
       }
+    });
+
+  program
+    .command('share <block-id> <recipient>')
+    .description(
+      'Grant a recipient access to a block. recipient = DID or email. ' +
+        '--permission read,write,share,admin (default: read). ' +
+        '--expires-at epoch-seconds.',
+    )
+    .option('--permission <list>', 'comma-separated: read,write,share,admin (default: read)')
+    .option('--expires-at <sec>', 'grant expiry as epoch seconds', (v) => Number.parseInt(v, 10))
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (blockId: string, recipient: string, opts: Record<string, unknown>) => {
+      const permissions = parseList(opts['permission']);
+      const result = await runShare(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          blockId,
+          recipient,
+          ...(permissions !== undefined ? { permissions } : {}),
+          ...(typeof opts['expiresAt'] === 'number' ? { expiresAt: opts['expiresAt'] } : {}),
+        },
+      );
+      process.stdout.write(`share_id: ${result.shareId}\nblock_id: ${result.blockId}\n`);
+    });
+
+  program
+    .command('list <block-id>')
+    .description(
+      'List a block on the marketplace. --price required (UNBLOCK tokens). ' +
+        '--tier 1-5 (default 3). --summary up to 280 chars. --delist-existing removes prior listing.',
+    )
+    .requiredOption('--price <n>', 'price in UNBLOCK tokens (e.g. 4.99)', (v) => Number.parseFloat(v))
+    .option('--tier <n>', 'marketplace tier 1-5 (default 3)', (v) => Number.parseInt(v, 10))
+    .option('--summary <text>', 'short description (max 280 chars)')
+    .option('--delist-existing', 'remove any existing listing for this block first', false)
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (blockId: string, opts: Record<string, unknown>) => {
+      const result = await runListMarketplace(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          blockId,
+          priceUnblock: typeof opts['price'] === 'number' ? opts['price'] : 0,
+          ...(typeof opts['tier'] === 'number' ? { tier: opts['tier'] } : {}),
+          ...(typeof opts['summary'] === 'string' ? { summary: opts['summary'] } : {}),
+          delistExisting: opts['delistExisting'] === true,
+        },
+      );
+      process.stdout.write(`listing_id: ${result.listingId}\n`);
+    });
+
+  program
+    .command('purchase')
+    .description(
+      'Purchase a block or listing. Supply --block-id OR --listing-id. ' +
+        '--max-price caps the spend (UNBLOCK tokens). --payment-method wallet|relay (default relay).',
+    )
+    .option('--block-id <id>', 'purchase by block id')
+    .option('--listing-id <id>', 'purchase by listing id')
+    .option('--max-price <n>', 'maximum price willing to pay (UNBLOCK tokens)', (v) => Number.parseFloat(v))
+    .option('--payment-method <m>', 'wallet | relay (default relay)')
+    .option('--wallet-name <name>', 'named wallet (default: "default")')
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      if (typeof opts['blockId'] !== 'string' && typeof opts['listingId'] !== 'string') {
+        process.stderr.write('error: supply --block-id or --listing-id\n');
+        process.exitCode = 1;
+        return;
+      }
+      const result = await runPurchase(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          ...(typeof opts['blockId'] === 'string' ? { blockId: opts['blockId'] } : {}),
+          ...(typeof opts['listingId'] === 'string' ? { listingId: opts['listingId'] } : {}),
+          ...(typeof opts['maxPrice'] === 'number' ? { maxPrice: opts['maxPrice'] } : {}),
+          ...(typeof opts['paymentMethod'] === 'string'
+            ? { paymentMethod: opts['paymentMethod'] as 'wallet' | 'relay' }
+            : {}),
+          ...(typeof opts['walletName'] === 'string' ? { walletName: opts['walletName'] } : {}),
+        },
+      );
+      process.stdout.write(`block_id:   ${result.blockId}\nreceipt_id: ${result.receiptId}\n`);
+    });
+
+  program
+    .command('verify')
+    .description(
+      'Verify a block\'s signature and retrieve attestations. Supply --block-id OR --content-hash.',
+    )
+    .option('--block-id <id>', 'block to verify')
+    .option('--content-hash <hash>', 'content hash to verify against')
+    .option('--signature <sig>', 'signature to validate (optional)')
+    .option('--json', 'emit full JSON result instead of formatted text', false)
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      if (typeof opts['blockId'] !== 'string' && typeof opts['contentHash'] !== 'string') {
+        process.stderr.write('error: supply --block-id or --content-hash\n');
+        process.exitCode = 1;
+        return;
+      }
+      const result = await runVerify(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          ...(typeof opts['blockId'] === 'string' ? { blockId: opts['blockId'] } : {}),
+          ...(typeof opts['contentHash'] === 'string' ? { contentHash: opts['contentHash'] } : {}),
+          ...(typeof opts['signature'] === 'string' ? { signature: opts['signature'] } : {}),
+        },
+      );
+      if (opts['json'] === true) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        process.stdout.write(
+          `block_id:         ${result.blockId}\n` +
+            `signature_valid:  ${String(result.signatureValid)}\n` +
+            `attestations:     ${String(result.attestations.length)}\n`,
+        );
+        for (const a of result.attestations) {
+          process.stdout.write(`  ${a.attesterId}: ${a.statement}\n`);
+        }
+      }
+    });
+
+  program
+    .command('attest <block-id>')
+    .description(
+      'Attach a quality attestation to a block. --score 0-1 required. ' +
+        '--text up to 4000 chars. --signature Ed25519 hex (optional).',
+    )
+    .requiredOption('--score <n>', 'quality score 0.0–1.0', (v) => Number.parseFloat(v))
+    .option('--text <t>', 'attestation text (max 4000 chars)')
+    .option('--signature <sig>', 'Ed25519 signature hex')
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (blockId: string, opts: Record<string, unknown>) => {
+      const result = await runAttest(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          blockId,
+          score: typeof opts['score'] === 'number' ? opts['score'] : 0,
+          ...(typeof opts['text'] === 'string' ? { attestationText: opts['text'] } : {}),
+          ...(typeof opts['signature'] === 'string' ? { signature: opts['signature'] } : {}),
+        },
+      );
+      process.stdout.write(`attestation_id: ${result.attestationId}\n`);
+    });
+
+  program
+    .command('subscribe')
+    .description(
+      'Register a webhook for substrate events. --url (https required) --events comma-list --secret (≥16 chars). ' +
+        'Events: block.created block.updated block.forgotten block.listed block.purchased block.attested ' +
+        'cap-token.issued cap-token.revoked.',
+    )
+    .requiredOption('--url <url>', 'webhook endpoint (must be https)')
+    .requiredOption('--events <list>', 'comma-separated event types')
+    .requiredOption('--secret <s>', 'signing secret (min 16 chars) for HMAC verification')
+    .option('--no-active', 'register as inactive (paused)')
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      const events = parseList(opts['events']) ?? [];
+      const result = await runSubscribe(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          url: typeof opts['url'] === 'string' ? opts['url'] : '',
+          events,
+          secret: typeof opts['secret'] === 'string' ? opts['secret'] : '',
+          active: opts['active'] !== false,
+        },
+      );
+      process.stdout.write(`subscription_id: ${result.subscriptionId}\n`);
+    });
+
+  program
+    .command('update <block-id> <content>')
+    .description(
+      'Create a new version of an existing block. Preserves the block_id lineage. ' +
+        '--revision-reason optional note. --tag comma-list. --client-msg-id for idempotency.',
+    )
+    .option('--revision-reason <text>', 'reason for the update (max 1000 chars)')
+    .option('--tag <list>', 'comma-separated tags for the new version')
+    .option('--client-msg-id <id>', 'idempotency key (max 128 chars)')
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (blockId: string, content: string, opts: Record<string, unknown>) => {
+      const tags = parseList(opts['tag']);
+      const result = await runUpdate(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          blockId,
+          content,
+          ...(tags !== undefined ? { tags } : {}),
+          ...(typeof opts['revisionReason'] === 'string' ? { revisionReason: opts['revisionReason'] } : {}),
+          ...(typeof opts['clientMsgId'] === 'string' ? { clientMsgId: opts['clientMsgId'] } : {}),
+        },
+      );
+      process.stdout.write(`block_id:     ${result.blockId}\ncontent_hash: ${result.contentHash}\n`);
+    });
+
+  program
+    .command('extract')
+    .description(
+      'Extract structured facts from a block or semantic query. ' +
+        'Supply --block-id OR --query. --schema JSON object describing the desired output shape.',
+    )
+    .option('--block-id <id>', 'extract facts from this block')
+    .option('--query <text>', 'semantic query to extract facts from (max 4000 chars)')
+    .option('--schema <json>', 'JSON object describing output shape')
+    .option('--json', 'emit raw JSON array instead of newline-delimited facts', false)
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (opts: Record<string, unknown>) => {
+      if (typeof opts['blockId'] !== 'string' && typeof opts['query'] !== 'string') {
+        process.stderr.write('error: supply --block-id or --query\n');
+        process.exitCode = 1;
+        return;
+      }
+      let schema: Record<string, unknown> | undefined;
+      if (typeof opts['schema'] === 'string') {
+        try {
+          schema = JSON.parse(opts['schema']) as Record<string, unknown>;
+        } catch {
+          process.stderr.write('error: --schema must be valid JSON\n');
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const result = await runExtract(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          ...(typeof opts['blockId'] === 'string' ? { blockId: opts['blockId'] } : {}),
+          ...(typeof opts['query'] === 'string' ? { query: opts['query'] } : {}),
+          ...(schema !== undefined ? { schema } : {}),
+        },
+      );
+      if (opts['json'] === true) {
+        process.stdout.write(`${JSON.stringify(result.facts, null, 2)}\n`);
+      } else {
+        for (const fact of result.facts) {
+          process.stdout.write(`${JSON.stringify(fact)}\n`);
+        }
+      }
+    });
+
+  program
+    .command('forget <block-id>')
+    .description(
+      'Tombstone (soft) or permanently delete (hard) a block. Default mode: soft. ' +
+        '--mode hard triggers GDPR-compliant purge. --gdpr flags a data-subject request.',
+    )
+    .option('--mode <m>', 'soft | hard (default soft)')
+    .option('--reason <text>', 'reason for deletion (max 2000 chars)')
+    .option('--gdpr', 'flag as a data-subject deletion request', false)
+    .option('--auth-url <url>', 'auth-issuer URL override')
+    .action(async (blockId: string, opts: Record<string, unknown>) => {
+      const mode =
+        typeof opts['mode'] === 'string' && opts['mode'] === 'hard' ? 'hard' : 'soft';
+      const result = await runForget(
+        { substrateFactory: createHttpSubstrateFactory() },
+        {
+          ...configOverrides(opts),
+          blockId,
+          mode,
+          ...(typeof opts['reason'] === 'string' ? { reason: opts['reason'] } : {}),
+          gdprRequest: opts['gdpr'] === true,
+        },
+      );
+      const eligibleAt =
+        result.hardDeleteEligibleAt !== null
+          ? new Date(result.hardDeleteEligibleAt * 1000).toISOString()
+          : 'n/a';
+      process.stdout.write(
+        `block_id:                ${result.blockId}\n` +
+          `deleted_at:              ${new Date(result.deletedAt * 1000).toISOString()}\n` +
+          `mode:                    ${result.mode}\n` +
+          `cascade_count:           ${String(result.cascadeCount)}\n` +
+          `hard_delete_eligible_at: ${eligibleAt}\n`,
+      );
     });
 
   return program;
