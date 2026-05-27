@@ -6,7 +6,7 @@
  *   ~/.unblock/identity.json     { did, agentName, ed25519PublicKeyHex, createdAt }
  *   ~/.unblock/comms-v3.creds    NATS .creds file (User JWT + nkey seed)
  *   ~/.unblock/comms-v3.env      KEY=value lines:
- *                                  UNBLOCK_NATS_URL=tls://nats.kaeva.app:30640
+ *                                  UNBLOCK_NATS_URL=tls://nats.kaeva.app:39899
  *                                  UNBLOCK_NATS_CREDS=/abs/path/comms-v3.creds
  *                                  UNBLOCK_WORKSPACE_ID=<ws>
  *                                  UNBLOCK_ORG_ID=<org>

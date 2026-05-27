@@ -28,7 +28,7 @@ describe('http-substrate enroll', () => {
       new Response(
         JSON.stringify({
           nats_creds: '-----BEGIN NATS USER JWT-----\nFAKE\n------END NATS USER JWT------\n',
-          nats_url: 'tls://nats.kaeva.app:30640',
+          nats_url: 'tls://nats.kaeva.app:39899',
           workspace_id: 'ws-1',
           org_id: 'org-1',
           name: 'persona',

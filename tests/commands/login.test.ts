@@ -24,7 +24,7 @@ describe('runLogin', () => {
     const { factory, state } = createMockSubstrateFactory();
     state.enrollResponse = {
       natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       workspaceId: 'ws-orgA',
       orgId: 'org-A',
       name: 'Viraj-Alpha',
@@ -39,7 +39,7 @@ describe('runLogin', () => {
     expect(result.mintedNewIdentity).toBe(true);
     expect(result.orgId).toBe('org-A');
     expect(result.workspaceId).toBe('ws-orgA');
-    expect(result.broker).toBe('tls://nats.kaeva.app:30640');
+    expect(result.broker).toBe('tls://nats.kaeva.app:39899');
 
     // Identity was written.
     const id = await readIdentity();
@@ -50,7 +50,7 @@ describe('runLogin', () => {
     const creds = await readFile(v3CredsPath(), 'utf-8');
     expect(creds).toContain('-----BEGIN NATS USER JWT-----');
     const envContent = await readFile(v3EnvPath(), 'utf-8');
-    expect(envContent).toContain('UNBLOCK_NATS_URL=tls://nats.kaeva.app:30640');
+    expect(envContent).toContain('UNBLOCK_NATS_URL=tls://nats.kaeva.app:39899');
     expect(envContent).toContain('UNBLOCK_ORG_ID=org-A');
     expect(envContent).toContain('UNBLOCK_CHAT_NAME=Viraj-Alpha');
     expect(envContent).toContain('UNBLOCK_JWT_EXPIRES_AT=2027-01-01T00:00:00Z');
@@ -64,7 +64,7 @@ describe('runLogin', () => {
     const { factory, state } = createMockSubstrateFactory();
     state.enrollResponse = {
       natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       workspaceId: 'ws',
       orgId: 'org',
       name: 'persona',
@@ -82,7 +82,7 @@ describe('runLogin', () => {
     const { factory, state } = createMockSubstrateFactory();
     state.enrollResponse = {
       natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       workspaceId: 'ws',
       orgId: 'org',
       name: 'persona',

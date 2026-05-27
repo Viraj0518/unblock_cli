@@ -43,7 +43,7 @@ describe('persona-store', () => {
 
   it('comms-env round-trip preserves all five required fields', async () => {
     const env = {
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       credsPath: '/some/path/comms-v3.creds',
       workspaceId: 'ws-default',
       orgId: 'org-test',
@@ -57,7 +57,7 @@ describe('persona-store', () => {
   it('parseCommsEnv handles quoted values and comments', () => {
     const raw = [
       '# header comment',
-      'UNBLOCK_NATS_URL="tls://nats.kaeva.app:30640"',
+      'UNBLOCK_NATS_URL="tls://nats.kaeva.app:39899"',
       "UNBLOCK_NATS_CREDS='/path/to/creds'",
       'UNBLOCK_WORKSPACE_ID=ws-default',
       'UNBLOCK_ORG_ID=org-test',
@@ -66,7 +66,7 @@ describe('persona-store', () => {
     ].join('\n');
     const parsed = parseCommsEnv(raw);
     expect(parsed).toEqual({
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       credsPath: '/path/to/creds',
       workspaceId: 'ws-default',
       orgId: 'org-test',

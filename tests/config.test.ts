@@ -32,7 +32,7 @@ describe('resolveConfig', () => {
 
   it('reads from comms-v3.env when persona is logged in', async () => {
     await writeCommsEnv({
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       credsPath: '/path/creds',
       workspaceId: 'ws-default',
       orgId: 'org-test',
