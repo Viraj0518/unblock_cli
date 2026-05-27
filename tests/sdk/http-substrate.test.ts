@@ -28,15 +28,21 @@ function makeFetch(responses: ReadonlyArray<Response | (() => Response)>): {
 }
 
 describe('http-substrate enroll', () => {
-  it('posts to /v1/identity/enroll and parses the response', async () => {
+  it('posts to /v1/identity/enroll w/ X-Invite-Code header + {human_did, ed25519_pubkey_hex} body (live server shape)', async () => {
+    // Server-of-truth: unblock-v02-mig/services/auth-issuer/src/handlers/
+    // identity-enroll.ts. Returns user_jwt + creds_file_content + broker_url
+    // + workspace_id + org_id + role + human_did + expires_at.
     const { fetch, calls } = makeFetch([
       new Response(
         JSON.stringify({
-          nats_creds: '-----BEGIN NATS USER JWT-----\nFAKE\n------END NATS USER JWT------\n',
-          nats_url: 'tls://nats.kaeva.app:39899',
+          user_jwt: 'eyJ.fake.jwt',
+          creds_file_content:
+            '-----BEGIN NATS USER JWT-----\nFAKE\n-----END NATS USER JWT-----\n',
+          broker_url: 'tls://nats.kaeva.app:39899',
           workspace_id: 'ws-1',
           org_id: 'org-1',
-          name: 'persona',
+          role: 'member',
+          human_did: 'did:key:z6Mkfake',
           expires_at: '2027-01-01T00:00:00Z',
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -56,11 +62,91 @@ describe('http-substrate enroll', () => {
     expect(result.orgId).toBe('org-1');
     expect(result.workspaceId).toBe('ws-1');
     expect(result.expiresAt).toBe('2027-01-01T00:00:00Z');
+    expect(result.natsCreds).toContain('BEGIN NATS USER JWT');
+    expect(result.natsUrl).toBe('tls://nats.kaeva.app:39899');
+    // Display handle picks the DID (server canonical) over the local
+    // agentName fallback.
+    expect(result.name).toBe('did:key:z6Mkfake');
 
     expect(calls[0]?.url).toBe('https://auth.kaeva.app/v1/identity/enroll');
+    expect(calls[0]?.init?.method).toBe('POST');
+
+    // CRITICAL contract pins — fixed 2026-05-27 after live smoke caught
+    // the CLI sending invite_code in the body (server returned 401
+    // invalid_or_expired_invite "Missing X-Invite-Code header").
+    const headers = (calls[0]?.init?.headers ?? {}) as Record<string, string>;
+    expect(headers['x-invite-code']).toBe('INV-1');
+
     const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
-    expect(body['invite_code']).toBe('INV-1');
-    expect(body['did']).toBe('did:key:z6Mkfake');
+    expect(body['human_did']).toBe('did:key:z6Mkfake');
+    expect(body['ed25519_pubkey_hex']).toBe('aa'.repeat(32));
+    // The OLD shape — proven to 401 on the live server — must NOT appear.
+    expect(body['invite_code']).toBeUndefined();
+    expect(body['did']).toBeUndefined();
+    expect(body['agent_name']).toBeUndefined();
+    expect(body['ed25519_public_key_hex']).toBeUndefined();
+  });
+
+  it('accepts legacy {nats_creds, nats_url, name} response shape (back-compat for mocks)', async () => {
+    // Older fixtures + the v0.1 internal mock still ship the legacy
+    // server shape. Don't break them — surface the same EnrollResult.
+    const { fetch } = makeFetch([
+      new Response(
+        JSON.stringify({
+          nats_creds: '-----BEGIN NATS USER JWT-----\nFAKE\n-----END NATS USER JWT-----\n',
+          nats_url: 'tls://nats.kaeva.app:39899',
+          workspace_id: 'ws-1',
+          org_id: 'org-1',
+          name: 'persona',
+        }),
+        { status: 200 },
+      ),
+    ]);
+    const factory = createHttpSubstrateFactory(fetch);
+    const client = factory.create({ authUrl: 'https://auth.kaeva.app' });
+    const result = await client.enroll({
+      inviteCode: 'INV-1',
+      identity: {
+        did: 'did:key:z6Mkfake',
+        agentName: 'persona',
+        ed25519PublicKeyHex: 'aa'.repeat(32),
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    expect(result.name).toBe('persona');
+    expect(result.natsUrl).toBe('tls://nats.kaeva.app:39899');
+  });
+
+  it('lowercases ed25519_pubkey_hex before sending (server requires lowercase per regex /^[0-9a-f]{64}$/)', async () => {
+    const { fetch, calls } = makeFetch([
+      new Response(
+        JSON.stringify({
+          user_jwt: 'x',
+          creds_file_content: 'creds',
+          broker_url: 'tls://b:1',
+          workspace_id: 'w',
+          org_id: 'o',
+          role: 'member',
+          human_did: 'did:key:z6Mkfake',
+          expires_at: '2027-01-01T00:00:00Z',
+        }),
+        { status: 200 },
+      ),
+    ]);
+    const factory = createHttpSubstrateFactory(fetch);
+    const client = factory.create({ authUrl: 'https://auth.kaeva.app' });
+    await client.enroll({
+      inviteCode: 'INV-1',
+      identity: {
+        did: 'did:key:z6Mkfake',
+        agentName: 'persona',
+        // Uppercase hex — server would reject if we forwarded as-is.
+        ed25519PublicKeyHex: 'AA'.repeat(32),
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    expect(body['ed25519_pubkey_hex']).toBe('aa'.repeat(32));
   });
 
   it('throws EnrollError on 4xx', async () => {
@@ -80,6 +166,40 @@ describe('http-substrate enroll', () => {
         },
       }),
     ).rejects.toBeInstanceOf(EnrollError);
+  });
+
+  it('throws EnrollError on the live "invalid_or_expired_invite" 401 (regression for the P0 cold-enrollment bug)', async () => {
+    // Exact wire shape returned by the auth-issuer at auth.kaeva.app when
+    // the X-Invite-Code header is missing — surfaced by a fresh-agent CLI
+    // smoke test on 2026-05-27. Before the fix the CLI tripped this because
+    // it put the code in the JSON body. After the fix the test pins that the
+    // EnrollError surfaces the server message verbatim.
+    const { fetch } = makeFetch([
+      new Response(
+        JSON.stringify({
+          code: 'invalid_or_expired_invite',
+          error: 'Missing X-Invite-Code header. Obtain an invite code from an org admin.',
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    ]);
+    const factory = createHttpSubstrateFactory(fetch);
+    const client = factory.create({ authUrl: 'https://auth.kaeva.app' });
+    await expect(
+      client.enroll({
+        inviteCode: 'INV-1',
+        identity: {
+          did: 'did:key:z6Mkfake',
+          agentName: 'persona',
+          ed25519PublicKeyHex: 'aa'.repeat(32),
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'EnrollError',
+      status: 401,
+      body: expect.stringContaining('invalid_or_expired_invite'),
+    });
   });
 });
 

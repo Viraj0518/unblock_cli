@@ -20,11 +20,27 @@
  * and requires `X-API-Key: unb_<32hex>` (NOT `Authorization: Bearer …`).
  *
  * Endpoints used today:
- *   POST <authUrl>/v1/identity/enroll       → { nats_creds, nats_url, workspace_id, org_id, name, expires_at? }
+ *   POST <authUrl>/v1/identity/enroll
+ *     headers: X-Invite-Code: <code>
+ *     body:    { human_did, ed25519_pubkey_hex }
+ *     →        { user_jwt, creds_file_content, broker_url, workspace_id,
+ *                org_id, role, human_did, expires_at }
+ *
  *   POST <substrateUrl>/v1/remember         → { block_id, bubble_id, created_at }  (created_at maps to RememberResult.storedAt)
  *   POST <substrateUrl>/v1/query            → { hits: [{block_id, content, score, ...}], answer, abstained, ... }
  *   …plus the Stage-2 wave-2 verbs (share/list/purchase/etc.) which the EF
  *   has yet to publish; they keep their original 4xx-pass-through behaviour.
+ *
+ * 2026-05-27 enrollment contract fix: previously the CLI sent the invite
+ * code as a JSON body field (`invite_code`) and parsed the response as
+ * `{nats_creds, nats_url, name}`. The deployed auth-issuer at
+ * auth.kaeva.app (sourced from unblock-v02-mig/services/auth-issuer/src/
+ * handlers/identity-enroll.ts, authored 2026-05-18) expects the code as
+ * an `X-Invite-Code` header, body `{human_did, ed25519_pubkey_hex}`, and
+ * returns `{user_jwt, creds_file_content, broker_url, ..., role, human_did}`.
+ * The CLI was authored 5 days after the server with stale wire docs and
+ * never actually round-tripped against the live surface. See PR description
+ * for the full diagnosis. Test pin: tests/sdk/http-substrate.test.ts.
  */
 
 import type {
@@ -94,21 +110,25 @@ export function createHttpSubstrateFactory(
 
       return {
         async enroll(input): Promise<EnrollResult> {
+          // Server contract (unblock-v02-mig/services/auth-issuer/src/handlers/
+          // identity-enroll.ts): the invite code is a credential and travels
+          // in the X-Invite-Code header, NOT a body field. The body carries
+          // only the new member's identity material.
+          const headers = await authHeaders();
+          headers['x-invite-code'] = input.inviteCode;
           const res = await fetcher(`${authBase}/v1/identity/enroll`, {
             method: 'POST',
-            headers: await authHeaders(),
+            headers,
             body: JSON.stringify({
-              invite_code: input.inviteCode,
-              did: input.identity.did,
-              agent_name: input.identity.agentName,
-              ed25519_public_key_hex: input.identity.ed25519PublicKeyHex,
+              human_did: input.identity.did,
+              ed25519_pubkey_hex: input.identity.ed25519PublicKeyHex.toLowerCase(),
             }),
           });
           if (!res.ok) {
             throw new EnrollError(res.status, await readText(res));
           }
           const body: unknown = await res.json();
-          return parseEnrollResponse(body);
+          return parseEnrollResponse(body, input.identity.agentName);
         },
 
         async remember(input): Promise<RememberResult> {
@@ -322,16 +342,73 @@ export class EnrollError extends SubstrateError {
 
 // ─── parsers ─────────────────────────────────────────────────────────────────
 
-function parseEnrollResponse(body: unknown): EnrollResult {
+/**
+ * Parse a `/v1/identity/enroll` response. The deployed auth-issuer returns:
+ *
+ *   { user_jwt, creds_file_content, broker_url, workspace_id, org_id,
+ *     role, human_did, expires_at }
+ *
+ * Older / mocked servers (and the pre-2026-05-27 CLI's own test fixtures)
+ * shipped a different shape: `{nats_creds, nats_url, name}`. We accept
+ * BOTH so existing mocks continue to work but the live server is the
+ * source of truth.
+ *
+ * Display handle (`name` on the CLI's `EnrollResult`) is chosen in this
+ * order:
+ *   1. legacy server `name` field, if present
+ *   2. live server `human_did` (DID is the canonical chat handle per
+ *      parent CLAUDE.md §"Identity convention")
+ *   3. the local persona's `agentName` passed in by the CLI caller
+ *
+ * `fallbackName` is the local persona's display handle; used only when
+ * the server omits both `name` and `human_did` (shouldn't happen on the
+ * live deployment but keeps the parser total).
+ */
+function parseEnrollResponse(body: unknown, fallbackName: string): EnrollResult {
   if (typeof body !== 'object' || body === null) {
     throw new Error(`enroll: response is not an object (${typeof body})`);
   }
   const b = body as Record<string, unknown>;
-  const natsCreds = strField(b, 'nats_creds');
-  const natsUrl = strField(b, 'nats_url');
+
+  // Creds + broker URL: live server uses `creds_file_content` + `broker_url`;
+  // older mocks used `nats_creds` + `nats_url`. Prefer live shape.
+  const natsCreds =
+    typeof b['creds_file_content'] === 'string'
+      ? (b['creds_file_content'] as string)
+      : typeof b['nats_creds'] === 'string'
+        ? (b['nats_creds'] as string)
+        : undefined;
+  if (natsCreds === undefined) {
+    throw new Error(
+      'enroll: response missing creds_file_content/nats_creds (got keys: ' +
+        Object.keys(b).join(',') +
+        ')',
+    );
+  }
+  const natsUrl =
+    typeof b['broker_url'] === 'string'
+      ? (b['broker_url'] as string)
+      : typeof b['nats_url'] === 'string'
+        ? (b['nats_url'] as string)
+        : undefined;
+  if (natsUrl === undefined) {
+    throw new Error(
+      'enroll: response missing broker_url/nats_url (got keys: ' +
+        Object.keys(b).join(',') +
+        ')',
+    );
+  }
+
   const workspaceId = strField(b, 'workspace_id');
   const orgId = strField(b, 'org_id');
-  const name = strField(b, 'name');
+
+  const name =
+    typeof b['name'] === 'string' && b['name'] !== ''
+      ? (b['name'] as string)
+      : typeof b['human_did'] === 'string' && b['human_did'] !== ''
+        ? (b['human_did'] as string)
+        : fallbackName;
+
   const expiresAt = typeof b['expires_at'] === 'string' ? b['expires_at'] : undefined;
   return expiresAt !== undefined
     ? { natsCreds, natsUrl, workspaceId, orgId, name, expiresAt }
