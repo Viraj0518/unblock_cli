@@ -39,6 +39,7 @@ import {
 import { createNatsFactory } from './comms/nats-client.js';
 import { createHttpSubstrateFactory } from './sdk/http-substrate.js';
 import { shortenDid } from './auth/did.js';
+import { loadRegistry, readProfileKey } from './profile/registry.js';
 import { version } from './index.js';
 
 /**
@@ -185,12 +186,14 @@ function buildProgram(): Command {
     .option('--tag <list>', 'comma-separated tags')
     .option('--parent <block_id>', 'parent block id (for hierarchical blocks)')
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (content: string, opts: Record<string, unknown>) => {
       const tags = parseList(opts['tag']);
       const result = await runRemember(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           content,
           ...(tags !== undefined ? { tags } : {}),
           ...(typeof opts['parent'] === 'string' ? { parentBlockId: opts['parent'] } : {}),
@@ -213,11 +216,13 @@ function buildProgram(): Command {
     .option('--concurrency <n>', 'parallel remember batches (default 1)', (v) => Number.parseInt(v, 10))
     .option('--continue-on-error', 'do not halt on per-file errors', false)
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (p: string, opts: Record<string, unknown>) => {
       const result = await runIngest(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           path: p,
           recursive: opts['recursive'] === true,
           dryRun: opts['dryRun'] === true,
@@ -323,11 +328,13 @@ function buildProgram(): Command {
     .option('--top-k <n>', 'how many hits to return (default 10)', (v) => Number.parseInt(v, 10))
     .option('--json', 'emit JSON instead of one-block-id-per-line', false)
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (q: string, opts: Record<string, unknown>) => {
       const hits = await runQuery(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           query: q,
           ...(typeof opts['topK'] === 'number' ? { topK: opts['topK'] } : {}),
         },
@@ -351,12 +358,14 @@ function buildProgram(): Command {
     .option('--permission <list>', 'comma-separated: read,write,share,admin (default: read)')
     .option('--expires-at <sec>', 'grant expiry as epoch seconds', (v) => Number.parseInt(v, 10))
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (blockId: string, recipient: string, opts: Record<string, unknown>) => {
       const permissions = parseList(opts['permission']);
       const result = await runShare(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           blockId,
           recipient,
           ...(permissions !== undefined ? { permissions } : {}),
@@ -377,11 +386,13 @@ function buildProgram(): Command {
     .option('--summary <text>', 'short description (max 280 chars)')
     .option('--delist-existing', 'remove any existing listing for this block first', false)
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (blockId: string, opts: Record<string, unknown>) => {
       const result = await runListMarketplace(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           blockId,
           priceUnblock: typeof opts['price'] === 'number' ? opts['price'] : 0,
           ...(typeof opts['tier'] === 'number' ? { tier: opts['tier'] } : {}),
@@ -404,6 +415,8 @@ function buildProgram(): Command {
     .option('--payment-method <m>', 'wallet | relay (default relay)')
     .option('--wallet-name <name>', 'named wallet (default: "default")')
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (opts: Record<string, unknown>) => {
       if (typeof opts['blockId'] !== 'string' && typeof opts['listingId'] !== 'string') {
         process.stderr.write('error: supply --block-id or --listing-id\n');
@@ -413,7 +426,7 @@ function buildProgram(): Command {
       const result = await runPurchase(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           ...(typeof opts['blockId'] === 'string' ? { blockId: opts['blockId'] } : {}),
           ...(typeof opts['listingId'] === 'string' ? { listingId: opts['listingId'] } : {}),
           ...(typeof opts['maxPrice'] === 'number' ? { maxPrice: opts['maxPrice'] } : {}),
@@ -436,6 +449,8 @@ function buildProgram(): Command {
     .option('--signature <sig>', 'signature to validate (optional)')
     .option('--json', 'emit full JSON result instead of formatted text', false)
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (opts: Record<string, unknown>) => {
       if (typeof opts['blockId'] !== 'string' && typeof opts['contentHash'] !== 'string') {
         process.stderr.write('error: supply --block-id or --content-hash\n');
@@ -445,7 +460,7 @@ function buildProgram(): Command {
       const result = await runVerify(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           ...(typeof opts['blockId'] === 'string' ? { blockId: opts['blockId'] } : {}),
           ...(typeof opts['contentHash'] === 'string' ? { contentHash: opts['contentHash'] } : {}),
           ...(typeof opts['signature'] === 'string' ? { signature: opts['signature'] } : {}),
@@ -475,11 +490,13 @@ function buildProgram(): Command {
     .option('--text <t>', 'attestation text (max 4000 chars)')
     .option('--signature <sig>', 'Ed25519 signature hex')
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (blockId: string, opts: Record<string, unknown>) => {
       const result = await runAttest(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           blockId,
           score: typeof opts['score'] === 'number' ? opts['score'] : 0,
           ...(typeof opts['text'] === 'string' ? { attestationText: opts['text'] } : {}),
@@ -501,12 +518,14 @@ function buildProgram(): Command {
     .requiredOption('--secret <s>', 'signing secret (min 16 chars) for HMAC verification')
     .option('--no-active', 'register as inactive (paused)')
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (opts: Record<string, unknown>) => {
       const events = parseList(opts['events']) ?? [];
       const result = await runSubscribe(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           url: typeof opts['url'] === 'string' ? opts['url'] : '',
           events,
           secret: typeof opts['secret'] === 'string' ? opts['secret'] : '',
@@ -526,12 +545,14 @@ function buildProgram(): Command {
     .option('--tag <list>', 'comma-separated tags for the new version')
     .option('--client-msg-id <id>', 'idempotency key (max 128 chars)')
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (blockId: string, content: string, opts: Record<string, unknown>) => {
       const tags = parseList(opts['tag']);
       const result = await runUpdate(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           blockId,
           content,
           ...(tags !== undefined ? { tags } : {}),
@@ -553,6 +574,8 @@ function buildProgram(): Command {
     .option('--schema <json>', 'JSON object describing output shape')
     .option('--json', 'emit raw JSON array instead of newline-delimited facts', false)
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (opts: Record<string, unknown>) => {
       if (typeof opts['blockId'] !== 'string' && typeof opts['query'] !== 'string') {
         process.stderr.write('error: supply --block-id or --query\n');
@@ -572,7 +595,7 @@ function buildProgram(): Command {
       const result = await runExtract(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           ...(typeof opts['blockId'] === 'string' ? { blockId: opts['blockId'] } : {}),
           ...(typeof opts['query'] === 'string' ? { query: opts['query'] } : {}),
           ...(schema !== undefined ? { schema } : {}),
@@ -597,13 +620,15 @@ function buildProgram(): Command {
     .option('--reason <text>', 'reason for deletion (max 2000 chars)')
     .option('--gdpr', 'flag as a data-subject deletion request', false)
     .option('--auth-url <url>', 'auth-issuer URL override')
+    .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--api-key <key>', 'API key override (unb_<32hex>)')
     .action(async (blockId: string, opts: Record<string, unknown>) => {
       const mode =
         typeof opts['mode'] === 'string' && opts['mode'] === 'hard' ? 'hard' : 'soft';
       const result = await runForget(
         { substrateFactory: createHttpSubstrateFactory() },
         {
-          ...configOverrides(opts),
+          ...(await substrateConfigOverrides(opts)),
           blockId,
           mode,
           ...(typeof opts['reason'] === 'string' ? { reason: opts['reason'] } : {}),
@@ -634,11 +659,42 @@ function writeProfileResult(result: ProfileResult): void {
   if (result.exitCode !== 0) process.exitCode = result.exitCode;
 }
 
+/**
+ * Substrate-aware config overrides for `remember` / `query` / etc.
+ *
+ * In addition to the comms overrides, this loads the active profile's
+ * `api_key` from `~/.unblock/profiles/<active>/api_key` when neither
+ * `--api-key` flag nor `UNBLOCK_API_KEY` env is set. Without that the
+ * substrate EF returns 401 AUTH_MISSING for every verb.
+ */
+async function substrateConfigOverrides(
+  opts: Record<string, unknown>,
+): Promise<Record<string, string>> {
+  const base = configOverrides(opts);
+  if (base['apiKey'] !== undefined) return base;
+  if (typeof process.env['UNBLOCK_API_KEY'] === 'string' && process.env['UNBLOCK_API_KEY'].trim() !== '') {
+    return base;
+  }
+  // Resolve active profile (best-effort — no profile = no key, let the
+  // substrate 401 with a clear message).
+  try {
+    const reg = await loadRegistry();
+    if (reg.active === null) return base;
+    const key = await readProfileKey(reg.active);
+    if (key === null) return base;
+    return { ...base, apiKey: key };
+  } catch {
+    return base;
+  }
+}
+
 function configOverrides(opts: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof opts['name'] === 'string') out['name'] = opts['name'];
   if (typeof opts['natsUrl'] === 'string') out['natsUrl'] = opts['natsUrl'];
   if (typeof opts['authUrl'] === 'string') out['authUrl'] = opts['authUrl'];
+  if (typeof opts['substrateUrl'] === 'string') out['substrateUrl'] = opts['substrateUrl'];
+  if (typeof opts['apiKey'] === 'string') out['apiKey'] = opts['apiKey'];
   if (typeof opts['workspaceId'] === 'string') out['workspaceId'] = opts['workspaceId'];
   return out;
 }

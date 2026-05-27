@@ -30,9 +30,12 @@ export async function runRemember(
   opts: RememberOptions,
 ): Promise<RememberOutput> {
   const cfg = await resolveConfig(opts);
+  const apiKey = cfg.apiKey;
   const client = deps.substrateFactory.create({
     authUrl: cfg.authUrl,
+    substrateUrl: cfg.substrateUrl,
     ...(deps.token !== undefined ? { token: deps.token } : {}),
+    ...(apiKey !== undefined ? { apiKey: async () => apiKey } : {}),
   });
   const out = await client.remember({
     content: opts.content,

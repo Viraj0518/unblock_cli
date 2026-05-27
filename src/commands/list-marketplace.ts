@@ -30,9 +30,12 @@ export async function runListMarketplace(
   opts: ListMarketplaceOptions,
 ): Promise<ListResult> {
   const cfg = await resolveConfig(opts);
+  const apiKey = cfg.apiKey;
   const client = deps.substrateFactory.create({
     authUrl: cfg.authUrl,
+    substrateUrl: cfg.substrateUrl,
     ...(deps.token !== undefined ? { token: deps.token } : {}),
+    ...(apiKey !== undefined ? { apiKey: async () => apiKey } : {}),
   });
   const input: ListInput = {
     blockId: opts.blockId,

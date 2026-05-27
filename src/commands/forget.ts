@@ -28,9 +28,12 @@ export async function runForget(
   opts: ForgetOptions,
 ): Promise<ForgetResult> {
   const cfg = await resolveConfig(opts);
+  const apiKey = cfg.apiKey;
   const client = deps.substrateFactory.create({
     authUrl: cfg.authUrl,
+    substrateUrl: cfg.substrateUrl,
     ...(deps.token !== undefined ? { token: deps.token } : {}),
+    ...(apiKey !== undefined ? { apiKey: async () => apiKey } : {}),
   });
   const input: ForgetInput = {
     blockId: opts.blockId,

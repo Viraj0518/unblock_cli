@@ -12,15 +12,19 @@
  */
 
 import { readCommsEnv, type CommsEnv } from './auth/persona-store.js';
-import { DEFAULT_AUTH_URL } from './sdk/http-substrate.js';
+import { DEFAULT_AUTH_URL, DEFAULT_SUBSTRATE_URL } from './sdk/http-substrate.js';
 
 export const DEFAULT_BROKER_URL = 'tls://nats.kaeva.app:39899';
 
 export interface ResolvedConfig {
   /** NATS broker URL. */
   readonly natsUrl: string;
-  /** auth-issuer URL. */
+  /** auth-issuer URL (used for `/v1/identity/enroll`). */
   readonly authUrl: string;
+  /** Substrate API URL (used for `/v1/remember`, `/v1/query`, …). */
+  readonly substrateUrl: string;
+  /** API key for substrate auth (`unb_<32hex>`); undefined if no profile set. */
+  readonly apiKey: string | undefined;
   /** Path to comms-v3.creds, if a persona is logged in. */
   readonly credsPath: string | undefined;
   /** Workspace ID for chat subject scoping. */
@@ -36,6 +40,8 @@ export interface ResolvedConfig {
 export interface ConfigOverrides {
   readonly natsUrl?: string;
   readonly authUrl?: string;
+  readonly substrateUrl?: string;
+  readonly apiKey?: string;
   readonly name?: string;
   readonly workspaceId?: string;
 }
@@ -43,6 +49,16 @@ export interface ConfigOverrides {
 /**
  * Resolve runtime config. Caller passes any CLI-flag overrides; this fn
  * layers them on top of env vars and the persona store.
+ *
+ * Substrate URL + API key priority:
+ *   1. Explicit CLI flag / programmatic override (`--substrate-url`, deps.apiKey)
+ *   2. `UNBLOCK_SUBSTRATE_URL` / `UNBLOCK_API_KEY` env
+ *   3. Built-in default (DEFAULT_SUBSTRATE_URL); apiKey stays undefined so
+ *      substrate calls cleanly 401 with a helpful error rather than hanging.
+ *
+ * Active-profile lookup is handled by main.ts before it calls into this
+ * function — keeping that I/O at the boundary makes resolveConfig pure
+ * w.r.t. the filesystem profile registry.
  */
 export async function resolveConfig(overrides: ConfigOverrides = {}): Promise<ResolvedConfig> {
   const env: CommsEnv | null = await readCommsEnv();
@@ -56,6 +72,13 @@ export async function resolveConfig(overrides: ConfigOverrides = {}): Promise<Re
   const authUrl =
     pickStr(overrides.authUrl) ?? pickStr(process.env['UNBLOCK_AUTH_URL']) ?? DEFAULT_AUTH_URL;
 
+  const substrateUrl =
+    pickStr(overrides.substrateUrl) ??
+    pickStr(process.env['UNBLOCK_SUBSTRATE_URL']) ??
+    DEFAULT_SUBSTRATE_URL;
+
+  const apiKey = pickStr(overrides.apiKey) ?? pickStr(process.env['UNBLOCK_API_KEY']);
+
   const workspaceId =
     pickStr(overrides.workspaceId) ??
     pickStr(process.env['UNBLOCK_WORKSPACE_ID']) ??
@@ -68,6 +91,8 @@ export async function resolveConfig(overrides: ConfigOverrides = {}): Promise<Re
   return {
     natsUrl,
     authUrl,
+    substrateUrl,
+    apiKey,
     credsPath: env?.credsPath,
     workspaceId,
     chatName,

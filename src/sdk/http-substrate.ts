@@ -1,16 +1,30 @@
 /**
  * HTTP substrate client — minimal POST/GET shim against the auth-issuer
- * and catalog-api. Bridge until `unblock_sdk` ships a real client.
+ * and the substrate API.
  *
- * Why hand-roll this instead of stubbing:
- *   - `login` needs to actually round-trip an invite code; without it
- *     `whoami`/`chat`/`say` have nothing to read.
- *   - The endpoint shapes are stable per ADR-116 (Wave 3F-2).
+ * Two separate base URLs because the deployed surface splits them:
+ *   - `authUrl` hosts `/v1/identity/enroll` (auth-issuer at auth.kaeva.app
+ *     today; will become its own polyrepo's deployed EF).
+ *   - `substrateUrl` hosts every substrate verb (remember, query, share,
+ *     list, purchase, verify, attest, subscribe, update, extract, forget).
+ *     Live target: the Supabase `unblock-api` edge function at
+ *     `https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api`.
  *
- * Endpoints used:
- *   POST <authUrl>/v1/identity/enroll  → { nats_creds, nats_url, workspace_id, org_id, name, expires_at? }
- *   POST <authUrl>/v1/remember          → { block_id, stored_at }  (TODO: ship in Stage 3)
- *   POST <authUrl>/v1/query             → readonly QueryHit[]      (TODO: ship in Stage 3)
+ * Iter-3 (2026-05-27) the CLI's substrate calls were 404-ing because they
+ * pointed at `authUrl` (which only knows `/v1/identity/enroll`) and used
+ * the auth-issuer's `Bearer` header. The substrate EF advertises:
+ *   GET  /v1/health
+ *   GET  /v1/orgs/me
+ *   POST /v1/remember            body: {content}                 -> {block_id, bubble_id, created_at}
+ *   POST /v1/query               body: {text, top_k?, ...}       -> {hits: [{block_id, content, score, ...}], answer, abstained, ...}
+ * and requires `X-API-Key: unb_<32hex>` (NOT `Authorization: Bearer …`).
+ *
+ * Endpoints used today:
+ *   POST <authUrl>/v1/identity/enroll       → { nats_creds, nats_url, workspace_id, org_id, name, expires_at? }
+ *   POST <substrateUrl>/v1/remember         → { block_id, bubble_id, created_at }  (created_at maps to RememberResult.storedAt)
+ *   POST <substrateUrl>/v1/query            → { hits: [{block_id, content, score, ...}], answer, abstained, ... }
+ *   …plus the Stage-2 wave-2 verbs (share/list/purchase/etc.) which the EF
+ *   has yet to publish; they keep their original 4xx-pass-through behaviour.
  */
 
 import type {
@@ -33,14 +47,24 @@ import type {
 import type { PersonaIdentity } from '../auth/persona-store.js';
 
 export const DEFAULT_AUTH_URL = 'https://auth.kaeva.app';
+/**
+ * Live substrate EF. When this changes (multi-tenant per-org deployments,
+ * for example), it should move to `resolveConfig` — but a single hardcoded
+ * default beats the previous "fall through to authUrl and 404" behaviour
+ * which silently broke every substrate verb shipped in the CLI.
+ */
+export const DEFAULT_SUBSTRATE_URL =
+  'https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api';
 
 export function createHttpSubstrateFactory(
   fetcher: typeof globalThis.fetch = globalThis.fetch,
 ): SubstrateFactory {
   return {
-    create({ authUrl, token }): SubstrateClient {
-      const base = authUrl.replace(/\/+$/, '');
-      const headersFor = async (): Promise<Record<string, string>> => {
+    create({ authUrl, substrateUrl, token, apiKey }): SubstrateClient {
+      const authBase = authUrl.replace(/\/+$/, '');
+      const substrateBase = (substrateUrl ?? authUrl).replace(/\/+$/, '');
+
+      const authHeaders = async (): Promise<Record<string, string>> => {
         const h: Record<string, string> = {
           'content-type': 'application/json',
           accept: 'application/json',
@@ -51,11 +75,28 @@ export function createHttpSubstrateFactory(
         return h;
       };
 
+      const substrateHeaders = async (): Promise<Record<string, string>> => {
+        const h: Record<string, string> = {
+          'content-type': 'application/json',
+          accept: 'application/json',
+        };
+        // Substrate EF wants `X-API-Key: unb_<hex>` — see auth-required
+        // middleware in services/edge-functions/unblock-api/src/.
+        if (apiKey !== undefined) {
+          h['x-api-key'] = await apiKey();
+        } else if (token !== undefined) {
+          // Fallback: some legacy callers pass a token; let the substrate
+          // 401 us rather than silently strip credentials.
+          h['authorization'] = `Bearer ${await token()}`;
+        }
+        return h;
+      };
+
       return {
         async enroll(input): Promise<EnrollResult> {
-          const res = await fetcher(`${base}/v1/identity/enroll`, {
+          const res = await fetcher(`${authBase}/v1/identity/enroll`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await authHeaders(),
             body: JSON.stringify({
               invite_code: input.inviteCode,
               did: input.identity.did,
@@ -71,9 +112,9 @@ export function createHttpSubstrateFactory(
         },
 
         async remember(input): Promise<RememberResult> {
-          const res = await fetcher(`${base}/v1/remember`, {
+          const res = await fetcher(`${substrateBase}/v1/remember`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(rememberBody(input)),
           });
           if (!res.ok) {
@@ -84,17 +125,21 @@ export function createHttpSubstrateFactory(
         },
 
         async query(q, opts): Promise<readonly QueryHit[]> {
-          const params = new URLSearchParams({ q });
-          if (opts?.topK !== undefined) params.set('top_k', String(opts.topK));
-          const res = await fetcher(`${base}/v1/query?${params.toString()}`, {
-            method: 'GET',
-            headers: await headersFor(),
+          // Substrate EF: POST /v1/query body={text, top_k?}, NOT GET with
+          // query-string. Iter-3 bug was sending GET with `?q=` which the
+          // EF's router treated as an unmatched route -> 404.
+          const body: Record<string, unknown> = { text: q };
+          if (opts?.topK !== undefined) body['top_k'] = opts.topK;
+          const res = await fetcher(`${substrateBase}/v1/query`, {
+            method: 'POST',
+            headers: await substrateHeaders(),
+            body: JSON.stringify(body),
           });
           if (!res.ok) {
             throw new SubstrateError(res.status, await readText(res));
           }
-          const body: unknown = await res.json();
-          return parseQueryHits(body);
+          const payload: unknown = await res.json();
+          return parseQueryHits(payload);
         },
 
         async share(input): Promise<ShareResult> {
@@ -104,9 +149,9 @@ export function createHttpSubstrateFactory(
           };
           if (input.permissions !== undefined) body['permissions'] = input.permissions;
           if (input.expiresAt !== undefined) body['expires_at'] = input.expiresAt;
-          const res = await fetcher(`${base}/v1/share`, {
+          const res = await fetcher(`${substrateBase}/v1/share`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -123,9 +168,9 @@ export function createHttpSubstrateFactory(
           if (input.royaltyShareWith !== undefined) body['royalty_share_with'] = input.royaltyShareWith;
           if (input.delistExisting !== undefined) body['delist_existing'] = input.delistExisting;
           if (input.summary !== undefined) body['summary'] = input.summary;
-          const res = await fetcher(`${base}/v1/list`, {
+          const res = await fetcher(`${substrateBase}/v1/list`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -140,9 +185,9 @@ export function createHttpSubstrateFactory(
           if (input.maxPrice !== undefined) body['max_price'] = input.maxPrice;
           if (input.paymentMethod !== undefined) body['payment_method'] = input.paymentMethod;
           if (input.walletName !== undefined) body['wallet_name'] = input.walletName;
-          const res = await fetcher(`${base}/v1/purchase`, {
+          const res = await fetcher(`${substrateBase}/v1/purchase`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -156,9 +201,9 @@ export function createHttpSubstrateFactory(
             content_hash: input.contentHash ?? null,
             signature: input.signature ?? null,
           };
-          const res = await fetcher(`${base}/v1/verify`, {
+          const res = await fetcher(`${substrateBase}/v1/verify`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -174,9 +219,9 @@ export function createHttpSubstrateFactory(
           if (input.attestationText !== undefined) body['attestation_text'] = input.attestationText;
           if (input.signature !== undefined) body['signature'] = input.signature;
           if (input.metadata !== undefined) body['metadata'] = input.metadata;
-          const res = await fetcher(`${base}/v1/attest`, {
+          const res = await fetcher(`${substrateBase}/v1/attest`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -192,9 +237,9 @@ export function createHttpSubstrateFactory(
           };
           if (input.filter !== undefined) body['filter'] = input.filter;
           if (input.active !== undefined) body['active'] = input.active;
-          const res = await fetcher(`${base}/v1/subscribe`, {
+          const res = await fetcher(`${substrateBase}/v1/subscribe`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -212,9 +257,9 @@ export function createHttpSubstrateFactory(
           if (input.tags !== undefined) body['tags'] = input.tags;
           if (input.metadata !== undefined) body['metadata'] = input.metadata;
           if (input.clientMsgId !== undefined) body['client_msg_id'] = input.clientMsgId;
-          const res = await fetcher(`${base}/v1/update`, {
+          const res = await fetcher(`${substrateBase}/v1/update`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -227,9 +272,9 @@ export function createHttpSubstrateFactory(
           if (input.blockId !== undefined) body['block_id'] = input.blockId;
           if (input.query !== undefined) body['query'] = input.query;
           if (input.schema !== undefined) body['schema'] = input.schema;
-          const res = await fetcher(`${base}/v1/extract`, {
+          const res = await fetcher(`${substrateBase}/v1/extract`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -242,9 +287,9 @@ export function createHttpSubstrateFactory(
           if (input.mode !== undefined) body['mode'] = input.mode;
           if (input.reason !== undefined) body['reason'] = input.reason;
           if (input.gdprRequest !== undefined) body['gdpr_request'] = input.gdprRequest;
-          const res = await fetcher(`${base}/v1/forget`, {
+          const res = await fetcher(`${substrateBase}/v1/forget`, {
             method: 'POST',
-            headers: await headersFor(),
+            headers: await substrateHeaders(),
             body: JSON.stringify(body),
           });
           if (!res.ok) throw new SubstrateError(res.status, await readText(res));
@@ -298,9 +343,23 @@ function parseRememberResponse(body: unknown): RememberResult {
     throw new Error('remember: response is not an object');
   }
   const b = body as Record<string, unknown>;
+  // The live substrate EF returns `created_at`; older / mocked servers
+  // may emit `stored_at`. Accept either so the CLI works against both.
+  const ts = typeof b['stored_at'] === 'string'
+    ? (b['stored_at'] as string)
+    : typeof b['created_at'] === 'string'
+      ? (b['created_at'] as string)
+      : undefined;
+  if (ts === undefined) {
+    throw new Error(
+      'remember: response missing stored_at/created_at (got keys: ' +
+        Object.keys(b).join(',') +
+        ')',
+    );
+  }
   return {
     blockId: strField(b, 'block_id'),
-    storedAt: strField(b, 'stored_at'),
+    storedAt: ts,
   };
 }
 
@@ -314,12 +373,26 @@ function parseQueryHits(body: unknown): readonly QueryHit[] {
       throw new Error(`query: hit #${i} is not an object`);
     }
     const h = raw as Record<string, unknown>;
+    // The substrate EF returns `content` (full block content). Older
+    // servers / mocks return `snippet`. Prefer snippet if present, else
+    // truncate content to a reasonable display width so the one-line
+    // output formatter in main.ts doesn't print a 4KB block to stdout.
+    const snippet = typeof h['snippet'] === 'string'
+      ? (h['snippet'] as string)
+      : typeof h['content'] === 'string'
+        ? truncateSnippet(h['content'] as string)
+        : '';
     return {
       blockId: strField(h, 'block_id'),
       score: typeof h['score'] === 'number' ? h['score'] : 0,
-      snippet: typeof h['snippet'] === 'string' ? h['snippet'] : '',
+      snippet,
     };
   });
+}
+
+function truncateSnippet(s: string, maxLen = 240): string {
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > maxLen ? `${oneLine.slice(0, maxLen - 1)}…` : oneLine;
 }
 
 function strField(obj: Record<string, unknown>, key: string): string {
