@@ -14,7 +14,7 @@
 import { readCommsEnv, type CommsEnv } from './auth/persona-store.js';
 import { DEFAULT_AUTH_URL } from './sdk/http-substrate.js';
 
-export const DEFAULT_BROKER_URL = 'tls://nats.kaeva.app:30640';
+export const DEFAULT_BROKER_URL = 'tls://nats.kaeva.app:39899';
 
 export interface ResolvedConfig {
   /** NATS broker URL. */

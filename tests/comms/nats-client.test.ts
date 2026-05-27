@@ -25,7 +25,7 @@ describe('assertSecureBrokerUrl', () => {
   });
 
   it('passes for TLS URLs', () => {
-    expect(() => assertSecureBrokerUrl('tls://nats.kaeva.app:30640')).not.toThrow();
+    expect(() => assertSecureBrokerUrl('tls://nats.kaeva.app:39899')).not.toThrow();
   });
 
   it('honors explicit override option over env', () => {

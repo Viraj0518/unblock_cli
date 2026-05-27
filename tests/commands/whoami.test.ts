@@ -37,7 +37,7 @@ describe('runWhoami', () => {
       createdAt: '2026-05-24T00:00:00.000Z',
     });
     await writeCommsEnv({
-      natsUrl: 'tls://nats.kaeva.app:30640',
+      natsUrl: 'tls://nats.kaeva.app:39899',
       credsPath: '/path/creds',
       workspaceId: 'ws-default',
       orgId: 'org-test',
@@ -51,7 +51,7 @@ describe('runWhoami', () => {
     const res = await runWhoami();
     expect(res.loggedIn).toBe(true);
     expect(res.did).toMatch(/^did:key:z/);
-    expect(res.broker).toBe('tls://nats.kaeva.app:30640');
+    expect(res.broker).toBe('tls://nats.kaeva.app:39899');
     expect(res.workspaceId).toBe('ws-default');
     expect(res.orgId).toBe('org-test');
     expect(res.jwtExpiresAt).toMatch(/^\d{4}-/);

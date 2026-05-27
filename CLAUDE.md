@@ -216,7 +216,7 @@ The shebang `#!/usr/bin/env node` is required on the bin entry. The landmines fi
 
 ## Inter-agent comms
 
-UNBLOCK NATS at `tls://nats.kaeva.app:30640`. See parent `C:/Users/12066/CLAUDE.md` for `unblock chat / say / dm / ask`. Sign commits as `Viraj-Alpha <virajsharma@kaeva.app>`.
+UNBLOCK NATS at `tls://nats.kaeva.app:39899`. See parent `C:/Users/12066/CLAUDE.md` for `unblock chat / say / dm / ask`. Sign commits as `Viraj-Alpha <virajsharma@kaeva.app>`.
 
 ## References
 

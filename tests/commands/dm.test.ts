@@ -8,7 +8,7 @@ let tmp: TmpHome;
 beforeEach(async () => {
   tmp = await makeTmpHome();
   await writeCommsEnv({
-    natsUrl: 'tls://nats.kaeva.app:30640',
+    natsUrl: 'tls://nats.kaeva.app:39899',
     credsPath: '/p',
     workspaceId: 'ws-default',
     orgId: 'org',
