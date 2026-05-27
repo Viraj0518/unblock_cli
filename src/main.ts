@@ -30,6 +30,7 @@ import { runForget } from './commands/forget.js';
 import { runIngest } from './commands/ingest.js';
 import { runEval, type EvalBench } from './commands/eval.js';
 import { runMint } from './commands/mint.js';
+import { runInvite, type InviteRole } from './commands/invite.js';
 import { runListen } from './commands/listen.js';
 import { runSend } from './commands/send.js';
 import { runTrace } from './commands/trace.js';
@@ -44,6 +45,7 @@ import {
 import { createNatsFactory } from './comms/nats-client.js';
 import { createHttpSubstrateFactory } from './sdk/http-substrate.js';
 import { shortenDid } from './auth/did.js';
+import { personaHomeFor, setPersonaDirOverride } from './auth/persona-store.js';
 import { loadRegistry, readProfileKey } from './profile/registry.js';
 import { version } from './index.js';
 
@@ -67,7 +69,12 @@ function buildProgram(): Command {
   program
     .name('unblock')
     .description(
-      'UNBLOCK CLI — comms (chat/say/dm/ask), substrate (remember/query/share/list/purchase/verify/attest/subscribe/update/extract/forget), auth (login/whoami/logout).',
+      'UNBLOCK CLI — comms (chat/say/dm/ask), substrate (remember/query/share/list/purchase/verify/attest/subscribe/update/extract/forget), auth (login/whoami/logout/invite/mint).\n' +
+        '\n' +
+        'Multi-persona on one workstation: every auth/persona command accepts ' +
+        '`--persona NAME` (preferred) to read/write `~/.unblock-personas/<NAME>/` ' +
+        'instead of `~/.unblock/`. You can also export `UNBLOCK_HOME=<dir>` to ' +
+        'pin a persona for the whole shell session.',
     )
     .version(version, '-V, --version');
 
@@ -115,9 +122,10 @@ function buildProgram(): Command {
       'Re-mint fresh NATS credentials for a persona without a full invite-code flow. ' +
         'Reads MACAROON_ROOT_SECRET from env or Supabase app_secrets. ' +
         'Writes to ~/.unblock-personas/<NAME>/comms-v3.{creds,env} (LF line endings). ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
         'Exit 0 on success, 1 on error.',
     )
-    .option('--persona <name>', 'persona name (default: current persona)')
+    .option('--persona <name>', 'persona name (writes ~/.unblock-personas/<name>/; default: current persona)')
     .option('--ttl <duration>', 'credential TTL, e.g. 30d, 1h, 2592000 (default: 30d)')
     .option('--print', 'print JSON to stdout, do not write files', false)
     .option('--json', 'machine-readable JSON output', false)
@@ -151,6 +159,67 @@ function buildProgram(): Command {
               `  expires:  ${result.jwtExpiresAt}\n` +
               `  creds:    ${result.credsPath ?? '(not written)'}\n`,
           );
+        }
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  // ─── invite (Gap A) ──────────────────────────────────────────────────────────
+  program
+    .command('invite')
+    .description(
+      'Mint an org invite code that a new persona can redeem via `unblock login <code>`. ' +
+        'Reads the admin NATS JWT from <persona-dir>/comms-v3.creds. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
+        'Exit 0 on success, 1 on error.',
+    )
+    .requiredOption('--org <org_did>', 'org DID (e.g. did:web:unblock.kaeva.app)')
+    .requiredOption('--role <role>', 'admin | member | guest')
+    .option('--expires-in-days <n>', 'invite TTL in days (default 7, max 90)', (v) =>
+      Number.parseInt(v, 10),
+    )
+    .option('--json', 'machine-readable JSON output', false)
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/comms-v3.creds')
+    .option('--auth-url <url>', 'auth-issuer URL override (default https://auth.kaeva.app)')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        const role = typeof opts['role'] === 'string' ? opts['role'].toLowerCase() : '';
+        if (role !== 'admin' && role !== 'member' && role !== 'guest') {
+          process.stderr.write(
+            `error: --role must be one of admin | member | guest (got "${String(opts['role'])}")\n`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        const inviteOpts = {
+          ...configOverrides(opts),
+          org: typeof opts['org'] === 'string' ? opts['org'] : '',
+          role: role as InviteRole,
+          ...(typeof opts['expiresInDays'] === 'number' ? { expiresInDays: opts['expiresInDays'] } : {}),
+          ...(typeof opts['persona'] === 'string' ? { persona: opts['persona'] } : {}),
+        };
+
+        const result = await runInvite({}, inviteOpts);
+
+        if (opts['json'] === true) {
+          process.stdout.write(`${JSON.stringify({
+            invite_code: result.inviteCode,
+            role: result.role,
+            expires_at: result.expiresAt,
+            org_id: result.orgId,
+          }, null, 2)}\n`);
+        } else {
+          process.stdout.write(`invite_code: ${result.inviteCode}\n`);
+          process.stdout.write(`role:        ${result.role}\n`);
+          if (result.expiresAt !== '') {
+            process.stdout.write(`expires_at:  ${result.expiresAt}\n`);
+          }
+          if (result.orgId !== '') {
+            process.stdout.write(`org_id:      ${result.orgId}\n`);
+          }
         }
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
@@ -273,51 +342,69 @@ function buildProgram(): Command {
   // ─── auth ─────────────────────────────────────────────────────────────────
   program
     .command('login <invite-code>')
-    .description('Redeem an org invite code: mints did:key, enrolls, writes ~/.unblock/comms-v3.{creds,env}.')
+    .description(
+      'Redeem an org invite code: mints did:key, enrolls, writes <persona-dir>/comms-v3.{creds,env}. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
     .option('--agent-name <name>', 'human-readable handle (default: short DID)')
+    .option('--persona <name>', 'write to ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .option('--auth-url <url>', 'auth-issuer URL override')
     .action(async (inviteCode: string, opts: Record<string, unknown>) => {
-      const result = await runLogin(
-        { substrateFactory: createHttpSubstrateFactory() },
-        {
-          ...configOverrides(opts),
-          inviteCode,
-          ...(typeof opts['agentName'] === 'string' ? { agentName: opts['agentName'] } : {}),
-        },
-      );
-      process.stdout.write(
-        [
-          `logged in as ${result.chatName}`,
-          `  did:        ${result.did} (${shortenDid(result.did)})`,
-          `  org:        ${result.orgId}`,
-          `  workspace:  ${result.workspaceId}`,
-          `  broker:     ${result.broker}`,
-          ...(result.expiresAt !== undefined ? [`  jwt expiry: ${result.expiresAt}`] : []),
-          result.mintedNewIdentity ? '(new identity minted)' : '(existing identity reused)',
-        ].join('\n') + '\n',
-      );
+      await withPersonaFlag(opts['persona'], async () => {
+        const result = await runLogin(
+          { substrateFactory: createHttpSubstrateFactory() },
+          {
+            ...configOverrides(opts),
+            inviteCode,
+            ...(typeof opts['agentName'] === 'string' ? { agentName: opts['agentName'] } : {}),
+          },
+        );
+        process.stdout.write(
+          [
+            `logged in as ${result.chatName}`,
+            `  did:        ${result.did} (${shortenDid(result.did)})`,
+            `  org:        ${result.orgId}`,
+            `  workspace:  ${result.workspaceId}`,
+            `  broker:     ${result.broker}`,
+            ...(result.expiresAt !== undefined ? [`  jwt expiry: ${result.expiresAt}`] : []),
+            result.mintedNewIdentity ? '(new identity minted)' : '(existing identity reused)',
+          ].join('\n') + '\n',
+        );
+      });
     });
 
   program
     .command('logout')
-    .description('Remove local persona store (identity + comms creds). Idempotent.')
-    .action(async () => {
-      const result = await runLogout();
-      if (result.removed.length === 0) {
-        process.stdout.write('already logged out (no files to remove)\n');
-      } else {
-        process.stdout.write(`removed ${String(result.removed.length)} file(s):\n`);
-        for (const p of result.removed) process.stdout.write(`  ${p}\n`);
-      }
+    .description(
+      'Remove local persona store (identity + comms creds). Idempotent. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
+    .option('--persona <name>', 'wipe ~/.unblock-personas/<name>/ instead of ~/.unblock/')
+    .action(async (opts: Record<string, unknown>) => {
+      await withPersonaFlag(opts['persona'], async () => {
+        const result = await runLogout();
+        if (result.removed.length === 0) {
+          process.stdout.write('already logged out (no files to remove)\n');
+        } else {
+          process.stdout.write(`removed ${String(result.removed.length)} file(s):\n`);
+          for (const p of result.removed) process.stdout.write(`  ${p}\n`);
+        }
+      });
     });
 
   program
     .command('whoami')
-    .description('Print current persona: DID, handle, broker, workspace, JWT expiry.')
-    .action(async () => {
-      const result = await runWhoami();
-      for (const line of result.lines) process.stdout.write(`${line}\n`);
-      process.exitCode = result.loggedIn ? 0 : 1;
+    .description(
+      'Print current persona: DID, handle, broker, workspace, JWT expiry. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
+    .option('--persona <name>', 'read ~/.unblock-personas/<name>/ instead of ~/.unblock/')
+    .action(async (opts: Record<string, unknown>) => {
+      await withPersonaFlag(opts['persona'], async () => {
+        const result = await runWhoami();
+        for (const line of result.lines) process.stdout.write(`${line}\n`);
+        process.exitCode = result.loggedIn ? 0 : 1;
+      });
     });
 
   // ─── substrate ────────────────────────────────────────────────────────────
@@ -930,6 +1017,30 @@ async function substrateConfigOverrides(
     return { ...base, apiKey: key };
   } catch {
     return base;
+  }
+}
+
+/**
+ * Run `fn` with the persona dir override active when the user passed
+ * `--persona NAME`. Restores the override on exit so subsequent commands
+ * (or repeated `program.parseAsync` calls inside tests) start clean.
+ *
+ * The override resolves to `~/.unblock-personas/<NAME>/` — same layout
+ * `mint --persona NAME` writes to.
+ */
+async function withPersonaFlag(
+  rawPersona: unknown,
+  fn: () => Promise<void>,
+): Promise<void> {
+  if (typeof rawPersona !== 'string' || rawPersona.trim() === '') {
+    await fn();
+    return;
+  }
+  setPersonaDirOverride(personaHomeFor(rawPersona.trim()));
+  try {
+    await fn();
+  } finally {
+    setPersonaDirOverride(null);
   }
 }
 
