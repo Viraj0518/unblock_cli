@@ -37,6 +37,7 @@ import { runSend } from './commands/send.js';
 import { runTrace } from './commands/trace.js';
 import { runHealth, type ComponentName } from './commands/health.js';
 import { formatSubjects, runSubjects } from './commands/subjects.js';
+import { registerSkillCommands } from './commands/skill.js';
 import { formatIdentityNormalize, runIdentityNormalize } from './commands/identity-normalize.js';
 import {
   cmdProfileAdd,
@@ -1264,6 +1265,9 @@ function buildProgram(): Command {
           `hard_delete_eligible_at: ${eligibleAt}\n`,
       );
     });
+
+  // ─── skill (W2a un-cut: YC demo install flow) ────────────────────────────────
+  registerSkillCommands(program);
 
   return program;
 }
