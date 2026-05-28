@@ -126,8 +126,13 @@ interface NatsConsumerMessages extends AsyncIterable<NatsJsMsg> {
 interface NatsConsumer {
   consume(): Promise<NatsConsumerMessages>;
 }
+interface NatsConsumerInfo {
+  readonly config?: Record<string, unknown>;
+}
 interface NatsConsumerApi {
   add(stream: string, cfg: Record<string, unknown>): Promise<unknown>;
+  info(stream: string, name: string): Promise<NatsConsumerInfo>;
+  delete(stream: string, name: string): Promise<unknown>;
 }
 interface NatsJsm {
   readonly consumers: NatsConsumerApi;
@@ -173,6 +178,15 @@ function wrapJetStream(conn: NatsConnection): JetStream {
   };
 }
 
+/**
+ * Test hook for the production NATS JetStream adapter. Kept out of
+ * `src/index.ts`; exported only so nats-client tests can exercise the real
+ * consumer setup path without importing the optional `nats` package.
+ */
+export function createNatsJetStreamForTest(conn: unknown): JetStream {
+  return wrapJetStream(conn as NatsConnection);
+}
+
 function jsConsumeIterable(
   conn: NatsConnection,
   opts: JetStreamConsumeOptions,
@@ -190,11 +204,17 @@ function jsConsumeIterable(
           const isEphemeral = opts.durableName === undefined;
           const consumerName: string =
             opts.durableName ?? `unblock-listen-${randomToken()}`;
-          await jsm.consumers.add(opts.stream, {
+          const consumerCfg = {
             ...cfg,
             name: consumerName,
             ...(isEphemeral ? {} : { durable_name: consumerName }),
             ...(isEphemeral ? { inactive_threshold: 60_000_000_000 } : {}),
+          };
+          await ensureConsumer(jsm.consumers, {
+            stream: opts.stream,
+            name: consumerName,
+            cfg: consumerCfg,
+            resetDurable: readResetDurable(opts),
           });
           const consumer = await conn.jetstream().consumers.get(opts.stream, consumerName);
           messages = await consumer.consume();
@@ -247,6 +267,74 @@ function jsConsumeIterable(
       };
     },
   };
+}
+
+async function ensureConsumer(
+  consumers: NatsConsumerApi,
+  opts: {
+    readonly stream: string;
+    readonly name: string;
+    readonly cfg: Record<string, unknown>;
+    readonly resetDurable: boolean;
+  },
+): Promise<void> {
+  if (opts.resetDurable) {
+    try {
+      await consumers.delete(opts.stream, opts.name);
+    } catch (err) {
+      if (!isConsumerNotFoundError(err)) throw err;
+    }
+    await consumers.add(opts.stream, opts.cfg);
+    return;
+  }
+
+  let existing: NatsConsumerInfo | undefined;
+  try {
+    existing = await consumers.info(opts.stream, opts.name);
+  } catch (err) {
+    if (!isConsumerNotFoundError(err)) throw err;
+  }
+
+  if (existing === undefined) {
+    await consumers.add(opts.stream, opts.cfg);
+    return;
+  }
+
+  if (!consumerConfigMatches(existing.config, opts.cfg)) {
+    throw new Error(
+      `JetStream durable consumer "${opts.name}" already exists on stream "${opts.stream}" ` +
+        'with different config. Re-run with --reset-durable to delete and recreate it, ' +
+        'or choose a different --durable name.',
+    );
+  }
+}
+
+function readResetDurable(opts: JetStreamConsumeOptions): boolean {
+  const rec = opts as JetStreamConsumeOptions & { readonly resetDurable?: boolean };
+  return rec.resetDurable === true && opts.durableName !== undefined;
+}
+
+function consumerConfigMatches(
+  existing: Record<string, unknown> | undefined,
+  expected: Record<string, unknown>,
+): boolean {
+  if (existing === undefined) return false;
+  if (existing['filter_subject'] !== expected['filter_subject']) return false;
+  if (existing['deliver_policy'] !== expected['deliver_policy']) return false;
+  return true;
+}
+
+function isConsumerNotFoundError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const rec = err as Record<string, unknown>;
+  if (rec['status'] === 404 || rec['code'] === 404 || rec['code'] === '404') return true;
+  const apiError = rec['api_error'];
+  if (typeof apiError === 'object' && apiError !== null) {
+    const api = apiError as Record<string, unknown>;
+    if (api['err_code'] === 10014 || api['code'] === 404) return true;
+  }
+  const msg = rec['message'];
+  return typeof msg === 'string' && /\bnot found\b|consumer.*does not exist/i.test(msg);
 }
 
 function buildConsumerConfig(opts: JetStreamConsumeOptions): Record<string, unknown> {

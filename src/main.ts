@@ -265,6 +265,7 @@ function buildProgram(): Command {
         '  --replay-all replay everything in 30-day JetStream retention, then live-tail.\n' +
         '  --durable    named durable JetStream consumer; cursor PERSISTS across restarts\n' +
         '               so the next `listen` resumes where this one left off.\n' +
+        '  --reset-durable delete and recreate the named durable consumer before listening.\n' +
         '\n' +
         'Auto-ack: when an incoming envelope has a NATS request-reply `reply` subject\n' +
         '(set by `unblock send --ack`), publishes a tiny ack envelope back BEFORE\n' +
@@ -281,6 +282,7 @@ function buildProgram(): Command {
     .option('--since <duration|iso>', 'JetStream replay from this point (e.g. 1h, 7d, 2026-05-27T12:00:00Z)')
     .option('--replay-all', 'JetStream replay everything in retention (30d) before live-tail', false)
     .option('--durable <name>', 'use named durable JetStream consumer (cursor persists across restarts)')
+    .option('--reset-durable', 'delete and recreate the named durable consumer before listening', false)
     .option('--no-ack', 'disable auto-ack on incoming request-reply messages (default: ack)')
     .option('--name <handle>', 'display name override')
     .option('--nats-url <url>', 'broker URL override')
@@ -300,6 +302,7 @@ function buildProgram(): Command {
               ...(typeof opts['since'] === 'string' ? { since: opts['since'] } : {}),
               replayAll: opts['replayAll'] === true,
               ...(typeof opts['durable'] === 'string' ? { durable: opts['durable'] } : {}),
+              resetDurable: opts['resetDurable'] === true,
               // commander's --no-ack inverts: opts.ack === false means user passed --no-ack.
               noAck: opts['ack'] === false,
             },
@@ -338,6 +341,7 @@ function buildProgram(): Command {
         '\n' +
         'Persistence + replay (forces JetStream path):\n' +
         '  --durable <name>       named JS consumer; cursor persists across restarts\n' +
+        '  --reset-durable        delete and recreate the named durable consumer before monitoring\n' +
         '  --since <dur|iso>      replay from a point (1h, 7d, ISO timestamp)\n' +
         '  --replay-all           replay everything in 30d retention\n' +
         '\n' +
@@ -368,6 +372,7 @@ function buildProgram(): Command {
     .option('--webhook <url>', 'POST event JSON to URL; retries 5xx (max 3), no retry on 4xx')
     .option('--notify', 'OS desktop notification per event', false)
     .option('--durable <name>', 'use named durable JetStream consumer (cursor persists)')
+    .option('--reset-durable', 'delete and recreate the named durable consumer before monitoring', false)
     .option('--since <dur|iso>', 'JetStream replay from this point (e.g. 1h, 7d, ISO timestamp)')
     .option('--replay-all', 'JetStream replay everything in retention before live-tail', false)
     .option('--until <regex>', 'exit 0 on first event whose JSON matches')
@@ -434,6 +439,7 @@ function buildProgram(): Command {
               ...(typeof opts['webhook'] === 'string' ? { webhook: opts['webhook'] } : {}),
               notify: opts['notify'] === true,
               ...(typeof opts['durable'] === 'string' ? { durable: opts['durable'] } : {}),
+              resetDurable: opts['resetDurable'] === true,
               ...(typeof opts['since'] === 'string' ? { since: opts['since'] } : {}),
               replayAll: opts['replayAll'] === true,
               ...(typeof opts['until'] === 'string' ? { until: opts['until'] } : {}),

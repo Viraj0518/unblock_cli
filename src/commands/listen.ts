@@ -2,7 +2,7 @@
  * `unblock listen [--subject PATTERN] [--channel NAME] [--filter REGEX]
  *                [--json] [--timeout SECONDS]
  *                [--since DURATION|ISO] [--replay-all] [--durable NAME]
- *                [--no-ack]`
+ *                [--reset-durable] [--no-ack]`
  *
  * Long-running NATS subscribe for receive loops.
  *
@@ -30,6 +30,7 @@
  *     --since 1h | 30m | 7d | <ISO>   replay from that point onward
  *     --replay-all                    replay everything in retention
  *     --durable NAME                  named consumer; cursor persists
+ *     --reset-durable                 delete/recreate named durable first
  *   Any of those three flags switches to JetStream consume. Bare `listen`
  *   keeps the raw subscribe code-path (lower latency, no replay).
  *
@@ -90,6 +91,11 @@ export interface ListenOptions extends ConfigOverrides {
    * restarts. Switches to JetStream consume.
    */
   readonly durable?: string;
+  /**
+   * Delete any existing named durable before creating it. Requires
+   * `durable`; useful when intentionally changing subject or replay config.
+   */
+  readonly resetDurable?: boolean;
 }
 
 export interface ListenResult {
@@ -100,6 +106,9 @@ export interface ListenResult {
 export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<ListenResult> {
   const cfg = await resolveConfig(opts);
   const getNow = deps.now ?? Date.now;
+  if (opts.resetDurable === true && opts.durable === undefined) {
+    throw new ListenResetDurableError();
+  }
 
   // Compile filter regex if provided
   let filterRe: RegExp | undefined;
@@ -208,6 +217,7 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
       subject,
       replayMode,
       ...(opts.durable !== undefined ? { durableName: opts.durable } : {}),
+      ...(opts.resetDurable === true ? { resetDurable: true } : {}),
       ...(opts.timeout !== undefined ? { timeoutSec: opts.timeout } : {}),
       ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
       handleFrame,
@@ -427,6 +437,7 @@ interface JetStreamReplayDeps {
   readonly subject: string;
   readonly replayMode: DeliverPolicy;
   readonly durableName?: string;
+  readonly resetDurable?: boolean;
   readonly timeoutSec?: number;
   readonly signal?: AbortSignal;
   readonly handleFrame: (
@@ -481,6 +492,7 @@ async function runJetStreamReplay(d: JetStreamReplayDeps): Promise<ListenResult>
     deliverPolicy: d.replayMode,
     signal: abortCtrl.signal,
     ...(d.durableName !== undefined ? { durableName: d.durableName } : {}),
+    ...(d.resetDurable === true ? { resetDurable: true } : {}),
   };
 
   try {
@@ -545,5 +557,12 @@ export class ListenJetStreamUnavailableError extends Error {
         'The current comms client does not expose one.',
     );
     this.name = 'ListenJetStreamUnavailableError';
+  }
+}
+
+export class ListenResetDurableError extends Error {
+  constructor() {
+    super('listen: --reset-durable requires --durable NAME.');
+    this.name = 'ListenResetDurableError';
   }
 }
