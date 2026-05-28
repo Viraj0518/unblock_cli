@@ -87,6 +87,118 @@ describe('http-substrate enroll', () => {
     expect(body['ed25519_public_key_hex']).toBeUndefined();
   });
 
+  it('parses api_key + api_key_id from the enroll response (P1 substrate-unreachable fix · 2026-05-27)', async () => {
+    // After the 2026-05-27 auth-issuer fix the /v1/identity/enroll
+    // response includes the freshly-minted substrate API key. The CLI
+    // must surface it so `login` can persist it to comms-v3.env. Before
+    // this fix every fresh persona could NATS-chat but not touch the
+    // substrate (every verb 401'd).
+    const { fetch } = makeFetch([
+      new Response(
+        JSON.stringify({
+          user_jwt: 'eyJ.fake.jwt',
+          creds_file_content:
+            '-----BEGIN NATS USER JWT-----\nFAKE\n-----END NATS USER JWT-----\n',
+          broker_url: 'tls://nats.kaeva.app:39899',
+          workspace_id: 'ws-1',
+          org_id: 'org-1',
+          role: 'member',
+          human_did: 'did:key:z6Mkfake',
+          expires_at: '2027-01-01T00:00:00Z',
+          api_key: 'unb_' + 'd'.repeat(64),
+          api_key_id: 'akey_enroll_abcdef0123456789',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    ]);
+    const factory = createHttpSubstrateFactory(fetch);
+    const client = factory.create({ authUrl: 'https://auth.kaeva.app' });
+    const result = await client.enroll({
+      inviteCode: 'INV-1',
+      identity: {
+        did: 'did:key:z6Mkfake',
+        agentName: 'persona',
+        ed25519PublicKeyHex: 'aa'.repeat(32),
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    expect(result.apiKey).toBe('unb_' + 'd'.repeat(64));
+    expect(result.apiKeyId).toBe('akey_enroll_abcdef0123456789');
+  });
+
+  it('leaves apiKey undefined when the server omits it (older auth-issuer back-compat)', async () => {
+    // Legacy / older auth-issuer deployments don't return api_key. CLI
+    // must NOT inject a phony value — it must surface undefined so the
+    // login command knows to skip writing UNBLOCK_API_KEY (the user can
+    // still fall back to `unblock profile add --api-key`).
+    const { fetch } = makeFetch([
+      new Response(
+        JSON.stringify({
+          user_jwt: 'eyJ.fake.jwt',
+          creds_file_content: '-----BEGIN NATS USER JWT-----\nFAKE\n-----END NATS USER JWT-----\n',
+          broker_url: 'tls://nats.kaeva.app:39899',
+          workspace_id: 'ws-1',
+          org_id: 'org-1',
+          role: 'member',
+          human_did: 'did:key:z6Mkfake',
+          expires_at: '2027-01-01T00:00:00Z',
+        }),
+        { status: 200 },
+      ),
+    ]);
+    const factory = createHttpSubstrateFactory(fetch);
+    const client = factory.create({ authUrl: 'https://auth.kaeva.app' });
+    const result = await client.enroll({
+      inviteCode: 'INV-1',
+      identity: {
+        did: 'did:key:z6Mkfake',
+        agentName: 'persona',
+        ed25519PublicKeyHex: 'aa'.repeat(32),
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    expect(result.apiKey).toBeUndefined();
+    expect(result.apiKeyId).toBeUndefined();
+  });
+
+  it('rejects an api_key that does not start with the unb_ prefix (server-side bug guard)', async () => {
+    // If the server returns a malformed api_key (wrong prefix, non-string,
+    // etc.) the CLI must NOT persist it. Better to fall through to the
+    // legacy `profile add` path than to write a poisoned env file that
+    // makes every substrate call 401 with a confusing AUTH_INVALID.
+    const { fetch } = makeFetch([
+      new Response(
+        JSON.stringify({
+          user_jwt: 'x',
+          creds_file_content: 'creds',
+          broker_url: 'tls://b:1',
+          workspace_id: 'w',
+          org_id: 'o',
+          role: 'member',
+          human_did: 'did:key:z6Mkfake',
+          expires_at: '2027-01-01T00:00:00Z',
+          api_key: 'oops_not_a_substrate_key_format',
+          api_key_id: 'akey_x',
+        }),
+        { status: 200 },
+      ),
+    ]);
+    const factory = createHttpSubstrateFactory(fetch);
+    const client = factory.create({ authUrl: 'https://auth.kaeva.app' });
+    const result = await client.enroll({
+      inviteCode: 'INV-1',
+      identity: {
+        did: 'did:key:z6Mkfake',
+        agentName: 'persona',
+        ed25519PublicKeyHex: 'aa'.repeat(32),
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    expect(result.apiKey).toBeUndefined();
+    // api_key_id is purely audit; we accept whatever the server gives us.
+    expect(result.apiKeyId).toBe('akey_x');
+  });
+
   it('accepts legacy {nats_creds, nats_url, name} response shape (back-compat for mocks)', async () => {
     // Older fixtures + the v0.1 internal mock still ship the legacy
     // server shape. Don't break them — surface the same EnrollResult.

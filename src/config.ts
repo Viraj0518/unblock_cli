@@ -77,7 +77,18 @@ export async function resolveConfig(overrides: ConfigOverrides = {}): Promise<Re
     pickStr(process.env['UNBLOCK_SUBSTRATE_URL']) ??
     DEFAULT_SUBSTRATE_URL;
 
-  const apiKey = pickStr(overrides.apiKey) ?? pickStr(process.env['UNBLOCK_API_KEY']);
+  // API-key resolution priority (P1 substrate-unreachable fix · 2026-05-27):
+  //   1. Explicit CLI flag / programmatic override (`--api-key`).
+  //   2. `UNBLOCK_API_KEY` process env (CI / power-user shell-level pin).
+  //   3. `UNBLOCK_API_KEY` line in `~/.unblock/comms-v3.env` written by
+  //      `unblock login` after the auth-issuer mints the key during enroll.
+  // Without (3) every fresh persona had to manually `unblock profile add
+  // --api-key …` before substrate verbs worked — the substrate was
+  // effectively unreachable on cold install.
+  const apiKey =
+    pickStr(overrides.apiKey) ??
+    pickStr(process.env['UNBLOCK_API_KEY']) ??
+    env?.apiKey;
 
   const workspaceId =
     pickStr(overrides.workspaceId) ??

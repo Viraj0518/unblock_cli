@@ -410,9 +410,36 @@ function parseEnrollResponse(body: unknown, fallbackName: string): EnrollResult 
         : fallbackName;
 
   const expiresAt = typeof b['expires_at'] === 'string' ? b['expires_at'] : undefined;
-  return expiresAt !== undefined
-    ? { natsCreds, natsUrl, workspaceId, orgId, name, expiresAt }
-    : { natsCreds, natsUrl, workspaceId, orgId, name };
+
+  // 2026-05-27 P1 substrate-unreachable fix: the auth-issuer now mints a
+  // substrate API key in the same enrollment round-trip. The CLI persists
+  // it to comms-v3.env so subsequent substrate verbs auto-load it without
+  // requiring a separate `profile add --api-key` step. Optional because
+  // older auth-issuer deployments (and the legacy mock shape) omit it.
+  // Validate the shape so a non-string / wrong-prefix server bug surfaces
+  // here, not as a 401 on the first substrate call.
+  const rawApiKey = b['api_key'];
+  const apiKey =
+    typeof rawApiKey === 'string' && rawApiKey.startsWith('unb_')
+      ? rawApiKey
+      : undefined;
+  const rawApiKeyId = b['api_key_id'];
+  const apiKeyId = typeof rawApiKeyId === 'string' ? rawApiKeyId : undefined;
+
+  // Build the result conditionally so we don't violate
+  // exactOptionalPropertyTypes (which rejects literal `undefined`
+  // for an optional `T` field).
+  const out: { -readonly [K in keyof EnrollResult]: EnrollResult[K] } = {
+    natsCreds,
+    natsUrl,
+    workspaceId,
+    orgId,
+    name,
+  };
+  if (expiresAt !== undefined) out.expiresAt = expiresAt;
+  if (apiKey !== undefined) out.apiKey = apiKey;
+  if (apiKeyId !== undefined) out.apiKeyId = apiKeyId;
+  return out;
 }
 
 function parseRememberResponse(body: unknown): RememberResult {
