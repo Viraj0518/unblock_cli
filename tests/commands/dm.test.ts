@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe('runDm', () => {
-  it('publishes to dm subject AND mirrors to firehose', async () => {
+  it('publishes to dm subject (lowercased recipient) AND mirrors to firehose', async () => {
     const { factory, state } = createMockCommsFactory();
     await runDm(
       { commsFactory: factory, now: () => 1700000000000 },
@@ -28,7 +28,10 @@ describe('runDm', () => {
     );
     expect(state.publishedFrames).toHaveLength(2);
     const subjects = state.publishedFrames.map((f) => f.subject);
-    expect(subjects).toContain('unblock.chat.ws.ws-default.to.haiku-A');
+    // P0 fix 2026-05-27: NATS subjects are case-sensitive; recipient is
+    // canonicalised to lowercase at subject construction so a sender writing
+    // `Haiku-A` doesn't silently miss the `haiku-a` listener.
+    expect(subjects).toContain('unblock.chat.ws.ws-default.to.haiku-a');
     expect(subjects).toContain('unblock.chat.ws.ws-default.firehose');
     const f0 = state.publishedFrames[0];
     expect(f0).toBeDefined();
@@ -39,5 +42,20 @@ describe('runDm', () => {
       to: 'haiku-A',
       msg: 'stop and re-read',
     });
+  });
+
+  // ─── PR-pin: recipient case normalization (lowercase) ───────────────────────
+  //
+  // Repro of the 2026-05-28 01:24 UTC silent-drop bug:
+  //   dm Viraj-Alpha "..."  →  ...to.Viraj-Alpha  (NOT caught by ...to.viraj-alpha listener)
+  it('lowercases mixed-case recipient when constructing the DM subject (P0 silent-drop fix)', async () => {
+    const { factory, state } = createMockCommsFactory();
+    await runDm(
+      { commsFactory: factory },
+      { to: 'Viraj-Alpha', msg: 'mixed-case probe' },
+    );
+    const subjects = state.publishedFrames.map((f) => f.subject);
+    expect(subjects).toContain('unblock.chat.ws.ws-default.to.viraj-alpha');
+    expect(subjects).not.toContain('unblock.chat.ws.ws-default.to.Viraj-Alpha');
   });
 });

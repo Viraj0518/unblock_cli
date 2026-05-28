@@ -155,3 +155,63 @@ describe('runListen interface', () => {
     expect(state.subscribers.has('custom.subject.>')).toBe(true);
   });
 });
+
+// ─── PR-pin: defensive subscribe on legacy mixed-case chat_name ───────────────
+//
+// Repro of the 2026-05-28 01:24 UTC silent-drop bug. When the persona's
+// `comms-v3.env` has a mixed-case `UNBLOCK_CHAT_NAME` (legacy enrollments
+// pre-2026-05-27), updated senders publish to the lowercased subject. The
+// listener must subscribe to BOTH the as-loaded form (so backwards-compat
+// with un-updated senders still works) AND the lowercased variant (so
+// updated senders aren't silently dropped) until the operator re-mints.
+describe('runListen defensive subscribe (legacy mixed-case chat_name)', () => {
+  it('subscribes to BOTH the as-loaded mixed-case subject AND the lowercased variant', async () => {
+    const { factory, state } = createMockCommsFactory();
+    const ctrl = new AbortController();
+
+    // beforeEach() seeded chatName='Viraj-Alpha' (mixed-case).
+    const listenPromise = runListen(
+      { commsFactory: factory, signal: ctrl.signal },
+      { json: true },
+    );
+
+    // Allow subscription registration.
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    expect(state.subscribers.has('unblock.chat.ws.ws-default.to.Viraj-Alpha')).toBe(true);
+    expect(state.subscribers.has('unblock.chat.ws.ws-default.to.viraj-alpha')).toBe(true);
+
+    ctrl.abort();
+    await listenPromise;
+  });
+
+  it('does NOT add the aux lowercased subscription when chat_name is already lowercase', async () => {
+    // Replace the seeded env with an all-lowercase chat_name.
+    await writeCommsEnv({
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      credsPath: '/p',
+      workspaceId: 'ws-default',
+      orgId: 'org',
+      chatName: 'viraj-alpha',
+    });
+
+    const { factory, state } = createMockCommsFactory();
+    const ctrl = new AbortController();
+
+    const listenPromise = runListen(
+      { commsFactory: factory, signal: ctrl.signal },
+      { json: true },
+    );
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    expect(state.subscribers.has('unblock.chat.ws.ws-default.to.viraj-alpha')).toBe(true);
+    // No mixed-case variant possible to subscribe to, and no double-subscribe
+    // to the same lowercase subject either.
+    const lowerSubs = state.subscribers.get('unblock.chat.ws.ws-default.to.viraj-alpha');
+    expect(lowerSubs?.size).toBe(1);
+
+    ctrl.abort();
+    await listenPromise;
+  });
+});

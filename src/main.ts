@@ -81,38 +81,58 @@ function buildProgram(): Command {
   // ─── comms ────────────────────────────────────────────────────────────────
   program
     .command('chat')
-    .description('Interactive REPL: firehose + DM inbox. Type message · @<who> message · /a <qid> message · /quit.')
+    .description(
+      'Interactive REPL: firehose + DM inbox. Type message · @<who> message · /a <qid> message · /quit. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
     .option('--name <handle>', 'display name (defaults to UNBLOCK_CHAT_NAME / persona JWT name)')
     .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (opts: Record<string, unknown>) => {
-      await runChat(
-        { commsFactory: createNatsFactory() },
-        configOverrides(opts),
-      );
+      await withPersonaFlag(opts['persona'], async () => {
+        await runChat(
+          { commsFactory: createNatsFactory() },
+          configOverrides(opts),
+        );
+      });
     });
 
   program
     .command('say <msg>')
-    .description('Fire-and-forget broadcast to the workspace firehose.')
+    .description(
+      'Fire-and-forget broadcast to the workspace firehose. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
     .option('--name <handle>', 'display name')
     .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (msg: string, opts: Record<string, unknown>) => {
-      await runSay(
-        { commsFactory: createNatsFactory() },
-        { ...configOverrides(opts), msg },
-      );
+      await withPersonaFlag(opts['persona'], async () => {
+        await runSay(
+          { commsFactory: createNatsFactory() },
+          { ...configOverrides(opts), msg },
+        );
+      });
     });
 
   program
     .command('dm <to> <msg>')
-    .description('Direct message a recipient (mirrored to firehose so humans can observe).')
+    .description(
+      'Direct message a recipient (mirrored to firehose so humans can observe). ' +
+        'Recipient name is case-normalized (lowercased) to match enrollment — ' +
+        'NATS subjects are case-sensitive, so `Viraj-Alpha` and `viraj-alpha` would otherwise be different inboxes. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
     .option('--name <handle>', 'display name')
     .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (to: string, msg: string, opts: Record<string, unknown>) => {
-      await runDm(
-        { commsFactory: createNatsFactory() },
-        { ...configOverrides(opts), to, msg },
-      );
+      await withPersonaFlag(opts['persona'], async () => {
+        await runDm(
+          { commsFactory: createNatsFactory() },
+          { ...configOverrides(opts), to, msg },
+        );
+      });
     });
 
   // ─── X1: mint ────────────────────────────────────────────────────────────────
@@ -233,6 +253,9 @@ function buildProgram(): Command {
     .description(
       'Long-running NATS subscribe. Default subject = current persona DM inbox. ' +
         '--channel NAME subscribes to unblock.channel.<name>.>. ' +
+        'When the loaded chat_name has uppercase chars, ALSO subscribes to its lowercased variant ' +
+        'as a transitional safety net (NATS subjects are case-sensitive). ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
         'Exit 0 on Ctrl+C or timeout, 1 on auth failure.',
     )
     .option('--subject <pattern>', 'NATS subject filter (supports * and > wildcards)')
@@ -242,20 +265,23 @@ function buildProgram(): Command {
     .option('--timeout <sec>', 'exit after N seconds', (v) => Number.parseFloat(v))
     .option('--name <handle>', 'display name override')
     .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (opts: Record<string, unknown>) => {
       try {
-        const result = await runListen(
-          { commsFactory: createNatsFactory() },
-          {
-            ...configOverrides(opts),
-            ...(typeof opts['subject'] === 'string' ? { subject: opts['subject'] } : {}),
-            ...(typeof opts['channel'] === 'string' ? { channel: opts['channel'] } : {}),
-            ...(typeof opts['filter'] === 'string' ? { filter: opts['filter'] } : {}),
-            json: opts['json'] === true,
-            ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
-          },
-        );
-        if (result.exitReason === 'timeout') process.exitCode = 0;
+        await withPersonaFlag(opts['persona'], async () => {
+          const result = await runListen(
+            { commsFactory: createNatsFactory() },
+            {
+              ...configOverrides(opts),
+              ...(typeof opts['subject'] === 'string' ? { subject: opts['subject'] } : {}),
+              ...(typeof opts['channel'] === 'string' ? { channel: opts['channel'] } : {}),
+              ...(typeof opts['filter'] === 'string' ? { filter: opts['filter'] } : {}),
+              json: opts['json'] === true,
+              ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+            },
+          );
+          if (result.exitReason === 'timeout') process.exitCode = 0;
+        });
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
         process.exitCode = 1;
@@ -267,46 +293,53 @@ function buildProgram(): Command {
     .command('send <to> <msg>')
     .description(
       'Send a direct message. With --ack, waits for recipient acknowledgement ' +
-        'before exiting. Exit 0=ok, 2=ack-timeout, 1=error.',
+        'before exiting. ' +
+        'Recipient name is case-normalized (lowercased) to match enrollment — ' +
+        'NATS subjects are case-sensitive, so `Viraj-Alpha` and `viraj-alpha` would otherwise be different inboxes. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
+        'Exit 0=ok, 2=ack-timeout, 1=error.',
     )
     .option('--ack', 'wait for recipient ack before exiting', false)
     .option('--timeout <sec>', 'seconds to wait for ack (default 30)', (v) => Number.parseFloat(v))
     .option('--json', 'machine-readable output', false)
     .option('--name <handle>', 'display name override')
     .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (to: string, msg: string, opts: Record<string, unknown>) => {
       try {
-        const result = await runSend(
-          { commsFactory: createNatsFactory() },
-          {
-            ...configOverrides(opts),
-            to,
-            msg,
-            ack: opts['ack'] === true,
-            ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
-            json: opts['json'] === true,
-          },
-        );
-        if (opts['json'] === true) {
-          process.stdout.write(`${JSON.stringify({
-            to: result.to,
-            message_id: result.messageId,
-            ack_received: result.ackReceived ?? null,
-            ack_source: result.ackSource ?? null,
-            ts: result.ts,
-            elapsed_ms: result.elapsedMs,
-          }, null, 2)}\n`);
-        } else {
-          process.stdout.write(`message_id: ${result.messageId}\n`);
-          if (result.ackReceived !== undefined) {
-            process.stdout.write(
-              result.ackReceived
-                ? `ack: received from ${result.ackSource ?? 'unknown'} (${result.elapsedMs}ms)\n`
-                : `ack: timeout after ${result.elapsedMs}ms\n`,
-            );
+        await withPersonaFlag(opts['persona'], async () => {
+          const result = await runSend(
+            { commsFactory: createNatsFactory() },
+            {
+              ...configOverrides(opts),
+              to,
+              msg,
+              ack: opts['ack'] === true,
+              ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+              json: opts['json'] === true,
+            },
+          );
+          if (opts['json'] === true) {
+            process.stdout.write(`${JSON.stringify({
+              to: result.to,
+              message_id: result.messageId,
+              ack_received: result.ackReceived ?? null,
+              ack_source: result.ackSource ?? null,
+              ts: result.ts,
+              elapsed_ms: result.elapsedMs,
+            }, null, 2)}\n`);
+          } else {
+            process.stdout.write(`message_id: ${result.messageId}\n`);
+            if (result.ackReceived !== undefined) {
+              process.stdout.write(
+                result.ackReceived
+                  ? `ack: received from ${result.ackSource ?? 'unknown'} (${result.elapsedMs}ms)\n`
+                  : `ack: timeout after ${result.elapsedMs}ms\n`,
+              );
+            }
           }
-        }
-        process.exitCode = result.exitCode;
+          process.exitCode = result.exitCode;
+        });
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
         process.exitCode = 1;
@@ -317,6 +350,7 @@ function buildProgram(): Command {
     .command('ask <question>')
     .description(
       'Publish a question and block until reply (or --timeout). Prints reply to stdout. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
         'Exit 0 = reply, exit 2 = timeout+--default, exit 1 = error.',
     )
     .option('--options <list>', 'comma-separated options shown to responders')
@@ -324,19 +358,22 @@ function buildProgram(): Command {
     .option('--default <val>', 'print this and exit 2 on timeout instead of erroring')
     .option('--name <handle>', 'display name')
     .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (question: string, opts: Record<string, unknown>) => {
-      const result = await runAsk(
-        { commsFactory: createNatsFactory() },
-        {
-          ...configOverrides(opts),
-          question,
-          ...(typeof opts['options'] === 'string' ? { options: opts['options'] } : {}),
-          ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
-          ...(typeof opts['default'] === 'string' ? { default: opts['default'] } : {}),
-        },
-      );
-      process.stdout.write(`${result.answer}\n`);
-      process.exitCode = result.outcome === 'timeout' ? 2 : 0;
+      await withPersonaFlag(opts['persona'], async () => {
+        const result = await runAsk(
+          { commsFactory: createNatsFactory() },
+          {
+            ...configOverrides(opts),
+            question,
+            ...(typeof opts['options'] === 'string' ? { options: opts['options'] } : {}),
+            ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+            ...(typeof opts['default'] === 'string' ? { default: opts['default'] } : {}),
+          },
+        );
+        process.stdout.write(`${result.answer}\n`);
+        process.exitCode = result.outcome === 'timeout' ? 2 : 0;
+      });
     });
 
   // ─── auth ─────────────────────────────────────────────────────────────────
@@ -522,6 +559,7 @@ function buildProgram(): Command {
     .command('health')
     .description(
       'Synthetic health check: auth | broker | substrate | audit | all. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
         'Exit 0 if all ok, 1 if any degraded/down.',
     )
     .option('--component <name>', 'auth | broker | substrate | audit | all (default: all)')
@@ -530,42 +568,45 @@ function buildProgram(): Command {
     .option('--supabase-service-role-key <key>', 'Supabase service-role key')
     .option('--auth-url <url>', 'auth-issuer URL override')
     .option('--substrate-url <url>', 'substrate API URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (opts: Record<string, unknown>) => {
       try {
-        const rawComponent = opts['component'];
-        const validComponents = ['auth', 'broker', 'substrate', 'audit', 'all'] as const;
-        const component: ComponentName | 'all' =
-          typeof rawComponent === 'string' && validComponents.includes(rawComponent as ComponentName | 'all')
-            ? (rawComponent as ComponentName | 'all')
-            : 'all';
+        await withPersonaFlag(opts['persona'], async () => {
+          const rawComponent = opts['component'];
+          const validComponents = ['auth', 'broker', 'substrate', 'audit', 'all'] as const;
+          const component: ComponentName | 'all' =
+            typeof rawComponent === 'string' && validComponents.includes(rawComponent as ComponentName | 'all')
+              ? (rawComponent as ComponentName | 'all')
+              : 'all';
 
-        const result = await runHealth(
-          { commsFactory: createNatsFactory() },
-          {
-            ...configOverrides(opts),
-            component,
-            json: opts['json'] === true,
-            ...(typeof opts['supabaseUrl'] === 'string' ? { supabaseUrl: opts['supabaseUrl'] } : {}),
-            ...(typeof opts['supabaseServiceRoleKey'] === 'string'
-              ? { supabaseServiceRoleKey: opts['supabaseServiceRoleKey'] }
-              : {}),
-          },
-        );
+          const result = await runHealth(
+            { commsFactory: createNatsFactory() },
+            {
+              ...configOverrides(opts),
+              component,
+              json: opts['json'] === true,
+              ...(typeof opts['supabaseUrl'] === 'string' ? { supabaseUrl: opts['supabaseUrl'] } : {}),
+              ...(typeof opts['supabaseServiceRoleKey'] === 'string'
+                ? { supabaseServiceRoleKey: opts['supabaseServiceRoleKey'] }
+                : {}),
+            },
+          );
 
-        if (opts['json'] === true) {
-          process.stdout.write(`${JSON.stringify(result.components, null, 2)}\n`);
-        } else {
-          process.stdout.write(`${'component'.padEnd(12)}${'status'.padEnd(12)}${'latency_ms'.padEnd(14)}last_error\n`);
-          process.stdout.write(`${'─'.repeat(70)}\n`);
-          for (const c of result.components) {
-            const status = c.status === 'ok' ? 'ok' : c.status;
-            process.stdout.write(
-              `${c.component.padEnd(12)}${status.padEnd(12)}${String(c.latencyMs).padEnd(14)}${c.lastError ?? ''}\n`,
-            );
+          if (opts['json'] === true) {
+            process.stdout.write(`${JSON.stringify(result.components, null, 2)}\n`);
+          } else {
+            process.stdout.write(`${'component'.padEnd(12)}${'status'.padEnd(12)}${'latency_ms'.padEnd(14)}last_error\n`);
+            process.stdout.write(`${'─'.repeat(70)}\n`);
+            for (const c of result.components) {
+              const status = c.status === 'ok' ? 'ok' : c.status;
+              process.stdout.write(
+                `${c.component.padEnd(12)}${status.padEnd(12)}${String(c.latencyMs).padEnd(14)}${c.lastError ?? ''}\n`,
+              );
+            }
           }
-        }
 
-        process.exitCode = result.allOk ? 0 : 1;
+          process.exitCode = result.allOk ? 0 : 1;
+        });
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
         process.exitCode = 1;

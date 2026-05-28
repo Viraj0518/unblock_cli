@@ -22,7 +22,7 @@ afterEach(async () => {
 // ─── happy path: simple send (no --ack) ───────────────────────────────────────
 
 describe('runSend without --ack', () => {
-  it('publishes to dm and firehose with message_id', async () => {
+  it('publishes to dm (lowercased recipient) and firehose with message_id', async () => {
     const { factory, state } = createMockCommsFactory();
     const result = await runSend(
       { commsFactory: factory, now: () => 1700000000000 },
@@ -34,15 +34,36 @@ describe('runSend without --ack', () => {
     expect(result.messageId).toMatch(/^[0-9a-f-]{36}$/);
 
     const subjects = state.publishedFrames.map((f) => f.subject);
-    expect(subjects).toContain('unblock.chat.ws.ws-default.to.haiku-A');
+    // P0 fix 2026-05-27: NATS subjects are case-sensitive; recipient is
+    // canonicalised to lowercase at subject construction so a sender writing
+    // `Haiku-A` doesn't silently miss the `haiku-a` listener.
+    expect(subjects).toContain('unblock.chat.ws.ws-default.to.haiku-a');
     expect(subjects).toContain('unblock.chat.ws.ws-default.firehose');
 
-    const dmFrame = state.publishedFrames.find((f) => f.subject.includes('.to.haiku-A'));
+    const dmFrame = state.publishedFrames.find((f) => f.subject.includes('.to.haiku-a'));
     expect(dmFrame).toBeDefined();
     if (dmFrame === undefined) return;
     const env = decodeFrame(dmFrame);
     expect(env['message_id']).toBe(result.messageId);
     expect(env['reply_to']).toBeUndefined();
+  });
+
+  // ─── PR-pin: recipient case normalization (lowercase) ───────────────────────
+  //
+  // Repro of the 2026-05-28 01:24 UTC silent-drop bug:
+  //   send Viraj-Alpha "..."  →  ...to.Viraj-Alpha  (NOT caught)
+  //   send viraj-alpha "..."  →  ...to.viraj-alpha  (caught)
+  // The CLI's enrolment writes the chat_name lowercased; the sender must
+  // canonicalise to the same form so the subject lines up.
+  it('lowercases mixed-case recipient when constructing the DM subject (P0 silent-drop fix)', async () => {
+    const { factory, state } = createMockCommsFactory();
+    await runSend(
+      { commsFactory: factory },
+      { to: 'Viraj-Alpha', msg: 'mixed-case probe' },
+    );
+    const subjects = state.publishedFrames.map((f) => f.subject);
+    expect(subjects).toContain('unblock.chat.ws.ws-default.to.viraj-alpha');
+    expect(subjects).not.toContain('unblock.chat.ws.ws-default.to.Viraj-Alpha');
   });
 });
 
@@ -63,8 +84,9 @@ describe('runSend with --ack (ack received)', () => {
               ...inner,
               publish(subject: string, payload: Uint8Array): void {
                 originalPublish(subject, payload);
-                // If publishing to the DM subject, immediately deliver an ack to inbox
-                if (subject.includes('.to.haiku-B')) {
+                // If publishing to the DM subject, immediately deliver an ack to inbox.
+                // Recipient is canonicalised (lowercased) at subject construction.
+                if (subject.includes('.to.haiku-b')) {
                   const decoded = JSON.parse(new TextDecoder().decode(payload)) as Record<string, unknown>;
                   const msgId = decoded['message_id'] as string;
                   const inboxSubject = `_INBOX.${msgId.replace(/-/g, '')}`;

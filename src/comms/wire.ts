@@ -20,12 +20,35 @@ import type { ChatEnvelope } from '../sdk/types.js';
 
 const chatPrefix = (workspaceId: string): string => `unblock.chat.ws.${workspaceId}`;
 
+/**
+ * Canonicalize a chat handle to the form used on the wire.
+ *
+ * NATS subjects are case-sensitive (`unblock.chat.ws.<ws>.to.Viraj-Alpha` and
+ * `...to.viraj-alpha` are DIFFERENT subjects). On 2026-05-28 a controlled
+ * probe proved that sending to mixed-case `Viraj-Alpha` silently dropped
+ * because the listener was subscribed under the lowercase `viraj-alpha` that
+ * the auth-issuer minted into the persona's `comms-v3.env`. No error, no
+ * warning — worst kind of bug.
+ *
+ * Single fix point: every DM-recipient and every persona-name lookup goes
+ * through this helper. That keeps the wire contract honest and matches the
+ * enrollment normalization landing in auth-issuer
+ * (`services/auth-issuer/src/handlers/identity-enroll.ts`, same PR).
+ *
+ * The normalization is intentionally trivial (lowercase) — chat handles are
+ * ASCII-only in v0.1 (validated at enrollment). If we ever support unicode
+ * handles, replace with a proper NFKC fold + lowercase.
+ */
+export function normalizeChatName(handle: string): string {
+  return handle.toLowerCase();
+}
+
 export function chatFirehoseSubject(workspaceId: string): string {
   return `${chatPrefix(workspaceId)}.firehose`;
 }
 
 export function chatDmSubject(workspaceId: string, recipient: string): string {
-  return `${chatPrefix(workspaceId)}.to.${recipient}`;
+  return `${chatPrefix(workspaceId)}.to.${normalizeChatName(recipient)}`;
 }
 
 export function chatQuestionSubject(workspaceId: string, questionId: string): string {

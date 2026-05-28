@@ -23,8 +23,9 @@
  * Exit 2: filter pattern is invalid regex.
  */
 
-import type { CommsFactory } from '../sdk/types.js';
+import type { CommsFactory, Subscription } from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
+import { normalizeChatName } from '../comms/wire.js';
 
 export interface ListenDeps {
   readonly commsFactory: CommsFactory;
@@ -84,31 +85,59 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const sub = client.subscribe(subject);
 
+  // ── P0 defensive subscribe: legacy mixed-case chat_name ────────────────────
+  // If the persona's `comms-v3.env` has a mixed-case `UNBLOCK_CHAT_NAME` (e.g.
+  // `Viraj-Alpha`) the default DM-inbox subject above resolves to a different
+  // NATS subject than what fresh senders publish to (which are lowercased at
+  // subject-construction time — see `normalizeChatName` in src/comms/wire.ts).
+  // We ALSO subscribe to the lowercased variant so messages from updated
+  // senders are not silently dropped during the transitional period before
+  // the operator re-mints the persona. Operators see a one-shot WARN so they
+  // know to fix the underlying chat_name (re-mint, or hand-edit the env file).
+  let auxSub: Subscription | undefined;
+  if (
+    opts.subject === undefined &&
+    opts.channel === undefined &&
+    cfg.chatName !== undefined &&
+    cfg.chatName !== normalizeChatName(cfg.chatName)
+  ) {
+    const auxSubject = `unblock.chat.ws.${cfg.workspaceId}.to.${normalizeChatName(cfg.chatName)}`;
+    process.stderr.write(
+      `WARN: chat_name "${cfg.chatName}" has uppercase chars — NATS subjects are case-sensitive, ` +
+      `messages may be dropped. Subscribing to "${auxSubject}" too as a transitional safety net. ` +
+      `Re-run \`unblock login <new-invite-code>\` (or hand-edit ~/.unblock/comms-v3.env) to lowercase it.\n`,
+    );
+    auxSub = client.subscribe(auxSubject);
+  }
+
   // Use an AbortController-like mechanism for timeout
   const stopPromise = new Promise<'timeout' | 'aborted'>((resolve) => {
     if (opts.timeout !== undefined && opts.timeout > 0) {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
         sub.unsubscribe();
+        if (auxSub !== undefined) auxSub.unsubscribe();
         resolve('timeout');
       }, opts.timeout * 1000);
     }
     if (deps.signal !== undefined) {
       if (deps.signal.aborted) {
         sub.unsubscribe();
+        if (auxSub !== undefined) auxSub.unsubscribe();
         resolve('aborted');
       } else {
         deps.signal.addEventListener('abort', () => {
           sub.unsubscribe();
+          if (auxSub !== undefined) auxSub.unsubscribe();
           resolve('aborted');
         }, { once: true });
       }
     }
   });
 
-  const listenPromise = (async (): Promise<void> => {
+  const pumpOne = async (s: Subscription): Promise<void> => {
     try {
-      for await (const frame of sub) {
+      for await (const frame of s) {
         if (timedOut) break;
         const arrivedAt = getNow();
         const raw = frame.data;
@@ -148,7 +177,11 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
     } catch {
       // Iterator closed (unsubscribed) — normal shutdown
     }
-  })();
+  };
+
+  const listenPromise: Promise<void> = auxSub !== undefined
+    ? Promise.all([pumpOne(sub), pumpOne(auxSub)]).then(() => undefined)
+    : pumpOne(sub);
 
   const raceResult = await Promise.race([
     stopPromise,

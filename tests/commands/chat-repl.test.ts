@@ -76,6 +76,24 @@ describe('runChatRepl', () => {
     expect(out.length).toBeGreaterThan(0);
   });
 
+  // ─── PR-pin: recipient case normalization for @<who> DMs ────────────────────
+  //
+  // Repro of the 2026-05-28 01:24 UTC silent-drop bug from the REPL path:
+  //   @Viraj-Alpha hi  →  ...to.Viraj-Alpha  (NOT caught by lowercase listener)
+  it('lowercases @<recipient> when building the DM subject (P0 silent-drop fix)', async () => {
+    const { factory, state } = createMockCommsFactory();
+    const out: string[] = [];
+    await runChatRepl({
+      commsFactory: factory,
+      linesIn: linesFrom(['@Viraj-Alpha hi there', '/quit']),
+      out: (line) => out.push(line),
+      now: () => 1700000000000,
+    });
+    const subjects = state.publishedFrames.map((f) => f.subject);
+    expect(subjects).toContain('unblock.chat.ws.ws.to.viraj-alpha');
+    expect(subjects).not.toContain('unblock.chat.ws.ws.to.Viraj-Alpha');
+  });
+
   it('prints usage for malformed @ and /a lines without crashing', async () => {
     const { factory } = createMockCommsFactory();
     const out: string[] = [];
