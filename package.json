@@ -1,5 +1,5 @@
 {
-  "name": "unblock_cli",
+  "name": "@unblock/cli",
   "version": "0.1.0",
   "description": "Standalone `unblock` command-line binary for UNBLOCK. Distributed via npm. Exposes comms (chat/say/dm/ask), substrate (remember/query), and auth (login/whoami/logout) over NATS + HTTP.",
   "keywords": [
@@ -10,6 +10,15 @@
   ],
   "license": "Apache-2.0",
   "author": "Viraj-Alpha <virajsharma@kaeva.app>",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Viraj0518/unblock_cli.git"
+  },
+  "homepage": "https://github.com/Viraj0518/unblock_cli#readme",
+  "bugs": {
+    "url": "https://github.com/Viraj0518/unblock_cli/issues"
+  },
   "type": "module",
   "main": "./dist/main.js",
   "bin": {
