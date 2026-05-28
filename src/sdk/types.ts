@@ -42,8 +42,61 @@ export interface ChatEnvelope {
 
 /** Subscription handle returned by `subscribe`. */
 export interface Subscription {
-  readonly [Symbol.asyncIterator]: () => AsyncIterator<{ readonly subject: string; readonly data: Uint8Array }>;
+  readonly [Symbol.asyncIterator]: () => AsyncIterator<{
+    readonly subject: string;
+    readonly data: Uint8Array;
+    /**
+     * Reply-to subject when the sender used NATS request-reply (e.g.
+     * `unblock send --ack` sets `reply` to `_INBOX.<uid>`). Receivers that
+     * want to ack the sender publish to this subject. Undefined for plain
+     * fire-and-forget publishes.
+     */
+    readonly reply?: string;
+  }>;
   unsubscribe(): void;
+}
+
+// ─── JetStream replay surface (issue #9: listen drops offline messages) ─────
+//
+// The NATS broker runs a `UNBLOCK_CHAT` JetStream stream with 30-day retention
+// (configured server-side, not by the CLI). Raw `subscribe()` is live-tail only
+// and drops anything published while the listener was offline. JetStream
+// consumers replay from the stream's retained log.
+
+/** Where a JetStream consumer starts reading from the stream's retained log. */
+export type DeliverPolicy =
+  | { readonly kind: 'all' }
+  | { readonly kind: 'new' }
+  | { readonly kind: 'by_start_time'; readonly startTime: string };
+
+export interface JetStreamConsumeOptions {
+  readonly stream: string;
+  readonly filterSubject: string;
+  readonly deliverPolicy: DeliverPolicy;
+  /**
+   * When set, the consumer is durable (persisted on the server), so a second
+   * call with the same name resumes from the last-acked message. When absent,
+   * the consumer is ephemeral (server reclaims it on disconnect).
+   */
+  readonly durableName?: string;
+  /** Abort the consume loop cleanly. */
+  readonly signal?: AbortSignal;
+}
+
+export interface JetStreamFrame {
+  readonly subject: string;
+  readonly data: Uint8Array;
+  /** Acknowledge receipt to the server (advances durable cursor). */
+  ack(): void;
+}
+
+/**
+ * Optional JetStream surface. Production NATS impl exposes this; tests can
+ * either mock it or leave it undefined (which the caller treats as
+ * "JetStream not available — live-tail only").
+ */
+export interface JetStream {
+  consume(opts: JetStreamConsumeOptions): AsyncIterable<JetStreamFrame>;
 }
 
 /**
@@ -59,6 +112,12 @@ export interface CommsClient {
   /** Flush pending publishes. Best-effort. */
   flush(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * JetStream surface for retained-log replay (`listen --since` / `--replay-all`
+   * / `--durable`). Optional: tests / lightweight clients may omit. Callers
+   * MUST guard with `if (client.jetstream === undefined) …`.
+   */
+  readonly jetstream?: JetStream;
 }
 
 /** Factory that opens a connection. Implementations are responsible for auth. */

@@ -254,15 +254,32 @@ function buildProgram(): Command {
       'Long-running NATS subscribe. Default subject = current persona DM inbox. ' +
         '--channel NAME subscribes to unblock.channel.<name>.>. ' +
         'When the loaded chat_name has uppercase chars, ALSO subscribes to its lowercased variant ' +
-        'as a transitional safety net (NATS subjects are case-sensitive). ' +
+        'as a transitional safety net (NATS subjects are case-sensitive).\n' +
+        '\n' +
+        'Four delivery modes (mutually composable with --filter / --timeout / --json):\n' +
+        '  (default)    live-tail only — messages sent while listener is down are LOST.\n' +
+        '  --since      replay from a point in time, then live-tail. ISO-8601 OR a\n' +
+        '               duration: 1h, 30m, 7d, 45s, 2w.\n' +
+        '  --replay-all replay everything in 30-day JetStream retention, then live-tail.\n' +
+        '  --durable    named durable JetStream consumer; cursor PERSISTS across restarts\n' +
+        '               so the next `listen` resumes where this one left off.\n' +
+        '\n' +
+        'Auto-ack: when an incoming envelope has a NATS request-reply `reply` subject\n' +
+        '(set by `unblock send --ack`), publishes a tiny ack envelope back BEFORE\n' +
+        'printing — fixes the `--ack` always-timeout bug. Opt out with --no-ack.\n' +
+        '\n' +
         'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
-        'Exit 0 on Ctrl+C or timeout, 1 on auth failure.',
+        'Exit 0 on Ctrl+C or timeout, 1 on auth failure, 2 on bad --filter regex or unavailable JetStream.',
     )
     .option('--subject <pattern>', 'NATS subject filter (supports * and > wildcards)')
     .option('--channel <name>', 'subscribe to unblock.channel.<name>.>')
     .option('--filter <regex>', 'only print messages where body matches regex')
     .option('--json', 'emit one JSON object per message', false)
     .option('--timeout <sec>', 'exit after N seconds', (v) => Number.parseFloat(v))
+    .option('--since <duration|iso>', 'JetStream replay from this point (e.g. 1h, 7d, 2026-05-27T12:00:00Z)')
+    .option('--replay-all', 'JetStream replay everything in retention (30d) before live-tail', false)
+    .option('--durable <name>', 'use named durable JetStream consumer (cursor persists across restarts)')
+    .option('--no-ack', 'disable auto-ack on incoming request-reply messages (default: ack)')
     .option('--name <handle>', 'display name override')
     .option('--nats-url <url>', 'broker URL override')
     .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
@@ -278,6 +295,11 @@ function buildProgram(): Command {
               ...(typeof opts['filter'] === 'string' ? { filter: opts['filter'] } : {}),
               json: opts['json'] === true,
               ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+              ...(typeof opts['since'] === 'string' ? { since: opts['since'] } : {}),
+              replayAll: opts['replayAll'] === true,
+              ...(typeof opts['durable'] === 'string' ? { durable: opts['durable'] } : {}),
+              // commander's --no-ack inverts: opts.ack === false means user passed --no-ack.
+              noAck: opts['ack'] === false,
             },
           );
           if (result.exitReason === 'timeout') process.exitCode = 0;
