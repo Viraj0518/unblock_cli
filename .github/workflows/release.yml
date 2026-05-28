@@ -1,0 +1,155 @@
+name: release
+
+# Triggers on `v*` tag push (e.g. v0.1.0). Cross-compiles standalone binaries
+# via @yao-pkg/pkg for 6 target platforms, uploads to the GitHub release as
+# `unblock-<os>-<arch>[.exe]`, plus a cosign-signed SHA256SUMS bundle.
+#
+# Consumed by Viraj0518/unblock-install (install.kaeva.app one-liner):
+# installer fetches `releases/latest/download/unblock-<os>-<arch>[.exe]` —
+# zero Node/npm dependency on the user's machine.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  # ----- 1. Build platform-native binaries on each runner -----
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            pkg_target: node22-linux-x64
+            ext: ''
+          - os: ubuntu-latest
+            target: linux-arm64
+            pkg_target: node22-linux-arm64
+            ext: ''
+          - os: macos-latest
+            target: darwin-x64
+            pkg_target: node22-macos-x64
+            ext: ''
+          - os: macos-latest
+            target: darwin-arm64
+            pkg_target: node22-macos-arm64
+            ext: ''
+          - os: windows-latest
+            target: windows-x64
+            pkg_target: node22-win-x64
+            ext: '.exe'
+          - os: windows-latest
+            target: windows-arm64
+            pkg_target: node22-win-arm64
+            ext: '.exe'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: pkg ${{ matrix.pkg_target }}
+        shell: bash
+        run: |
+          mkdir -p dist-bin
+          node node_modules/@yao-pkg/pkg/lib-es5/bin.js \
+            dist/main.js \
+            --targets ${{ matrix.pkg_target }} \
+            --output dist-bin/unblock-${{ matrix.target }}${{ matrix.ext }}
+
+      # Sanity-check that the produced binary actually runs (only on
+      # host-arch matches — we can't run cross-compiled arm64 on x64
+      # GitHub runners). Linux-x64 / darwin-arm64 / windows-x64 are the
+      # default GH-Actions arches as of 2026; arm64 jobs skip the
+      # self-test but still produce a binary.
+      - name: smoke ${{ matrix.target }}
+        if: matrix.target == 'linux-x64' || matrix.target == 'darwin-arm64' || matrix.target == 'windows-x64'
+        shell: bash
+        run: |
+          got=$(./dist-bin/unblock-${{ matrix.target }}${{ matrix.ext }} --version)
+          echo "version output: $got"
+          if [ "$got" != "0.1.0" ]; then
+            echo "::error::expected version 0.1.0, got '$got'"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unblock-${{ matrix.target }}
+          path: dist-bin/unblock-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # ----- 2. Collect, checksum, cosign, and publish release -----
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-bin
+          merge-multiple: true
+
+      - name: generate SHA256SUMS
+        shell: bash
+        working-directory: dist-bin
+        run: |
+          ls -la
+          # Sort for deterministic output. One '<sha256>  <asset>' line per asset.
+          sha256sum unblock-* | sort > SHA256SUMS
+          echo '--- SHA256SUMS ---'
+          cat SHA256SUMS
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: cosign sign-blob SHA256SUMS
+        working-directory: dist-bin
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign-blob \
+            --yes \
+            --bundle SHA256SUMS.cosign.bundle \
+            SHA256SUMS
+          echo '--- cosign bundle (first 200 chars) ---'
+          head -c 200 SHA256SUMS.cosign.bundle
+          echo
+
+      - name: publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The tag that triggered this run becomes the release.
+          # `softprops/action-gh-release` auto-creates it if missing.
+          files: |
+            dist-bin/unblock-*
+            dist-bin/SHA256SUMS
+            dist-bin/SHA256SUMS.cosign.bundle
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          # Mark as draft=false so install.kaeva.app's
+          # `releases/latest/download/...` URL resolves immediately.
+          draft: false
+          prerelease: false
