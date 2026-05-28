@@ -22,7 +22,7 @@
  * Endpoints used today:
  *   POST <authUrl>/v1/identity/enroll
  *     headers: X-Invite-Code: <code>
- *     body:    { human_did, ed25519_pubkey_hex }
+ *     body:    { human_did, ed25519_pubkey_hex, agent_name }
  *     →        { user_jwt, creds_file_content, broker_url, workspace_id,
  *                org_id, role, human_did, expires_at }
  *
@@ -36,8 +36,9 @@
  * `{nats_creds, nats_url, name}`. The deployed auth-issuer at
  * auth.kaeva.app (sourced from unblock-v02-mig/services/auth-issuer/src/
  * handlers/identity-enroll.ts, authored 2026-05-18) expects the code as
- * an `X-Invite-Code` header, body `{human_did, ed25519_pubkey_hex}`, and
- * returns `{user_jwt, creds_file_content, broker_url, ..., role, human_did}`.
+ * an `X-Invite-Code` header, body `{human_did, ed25519_pubkey_hex,
+ * agent_name}`, and returns `{user_jwt, creds_file_content, broker_url, ...,
+ * role, human_did}`.
  * The CLI was authored 5 days after the server with stale wire docs and
  * never actually round-tripped against the live surface. See PR description
  * for the full diagnosis. Test pin: tests/sdk/http-substrate.test.ts.
@@ -113,7 +114,8 @@ export function createHttpSubstrateFactory(
           // Server contract (unblock-v02-mig/services/auth-issuer/src/handlers/
           // identity-enroll.ts): the invite code is a credential and travels
           // in the X-Invite-Code header, NOT a body field. The body carries
-          // only the new member's identity material.
+          // only the new member's identity material, including the requested
+          // display handle for canonical chat_name derivation.
           const headers = await authHeaders();
           headers['x-invite-code'] = input.inviteCode;
           const res = await fetcher(`${authBase}/v1/identity/enroll`, {
@@ -122,6 +124,7 @@ export function createHttpSubstrateFactory(
             body: JSON.stringify({
               human_did: input.identity.did,
               ed25519_pubkey_hex: input.identity.ed25519PublicKeyHex.toLowerCase(),
+              agent_name: input.identity.agentName,
             }),
           });
           if (!res.ok) {
