@@ -43,18 +43,28 @@ export interface UserJwtClaims {
   readonly [key: string]: unknown;
 }
 
-/** Extract the JWT body from a .creds file. Returns null if no JWT block found. */
+/**
+ * Extract the JWT body from a .creds file. Returns null if no JWT block found.
+ *
+ * Tolerant of 5+ dashes on either side of the BEGIN/END marker. NATS writers
+ * across versions emit either 5 dashes (current `nsc` / `nats-server`) or 6
+ * dashes (older clients + some test fixtures), and the literal-string matcher
+ * previously here only accepted exactly 5+5 BEGIN with exactly 6+6 END — i.e.
+ * it matched neither the canonical 5/5 shape nor the canonical 6/6 shape, only
+ * an asymmetric hybrid that no writer produces. `subjects` was the first call
+ * site to actually exercise this function in production; all earlier verbs
+ * pass the `.creds` path to the NATS SDK which has its own (correct) parser.
+ */
 export function extractJwtFromCreds(creds: string): string | null {
-  const startMarker = '-----BEGIN NATS USER JWT-----';
-  const endMarker = '------END NATS USER JWT------';
-  const start = creds.indexOf(startMarker);
-  if (start < 0) return null;
-  const end = creds.indexOf(endMarker, start + startMarker.length);
-  if (end < 0) return null;
-  return creds
-    .slice(start + startMarker.length, end)
-    .trim()
-    .replace(/\s+/g, '');
+  const startRe = /^-{5,}BEGIN NATS USER JWT-{5,}\s*$/m;
+  const endRe = /^-{5,}END NATS USER JWT-{5,}\s*$/m;
+  const startMatch = startRe.exec(creds);
+  if (startMatch === null) return null;
+  const bodyStart = startMatch.index + startMatch[0].length;
+  const rest = creds.slice(bodyStart);
+  const endMatch = endRe.exec(rest);
+  if (endMatch === null) return null;
+  return rest.slice(0, endMatch.index).trim().replace(/\s+/g, '');
 }
 
 /** Decode a 3-part NATS JWT payload (no signature verification). */
