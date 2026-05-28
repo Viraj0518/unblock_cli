@@ -32,6 +32,7 @@ import { runEval, type EvalBench } from './commands/eval.js';
 import { runMint } from './commands/mint.js';
 import { runInvite, type InviteRole } from './commands/invite.js';
 import { runListen } from './commands/listen.js';
+import { runMonitor, type MonitorKind, type MonitorTopic } from './commands/monitor.js';
 import { runSend } from './commands/send.js';
 import { runTrace } from './commands/trace.js';
 import { runHealth, type ComponentName } from './commands/health.js';
@@ -307,6 +308,153 @@ function buildProgram(): Command {
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
         process.exitCode = 1;
+      }
+    });
+
+  // ─── monitor: wake-on-event with filters + routing hooks ─────────────────────
+  program
+    .command('monitor')
+    .description(
+      'Long-running NATS event watcher modeled on Claude Code\'s Monitor tool. ' +
+        'Each matching event becomes one stdout line (or --exec invocation / --webhook POST / --notify). ' +
+        'Distinct from `unblock listen` — listen tails your DM inbox; monitor wakes on filtered events ' +
+        'with routing hooks for reactive loops around the org-brain.\n' +
+        '\n' +
+        'Source (one of, default = inbox):\n' +
+        '  --subject <pattern>    raw NATS subject (supports * and >)\n' +
+        '  --channel <name>       shorthand for unblock.channel.<name>.>\n' +
+        '  --topic <preset>       inbox|firehose|events|channels|dms-to-anyone\n' +
+        '\n' +
+        'Filters (applied before emit):\n' +
+        '  --grep <regex>         only emit when payload JSON matches\n' +
+        '  --kind <k>             envelope.kind exact: dm|firehose|q|a|ack\n' +
+        '  --from <name|did>      envelope.source case-insensitive match\n' +
+        '\n' +
+        'Routing (pick one; default = stdout JSON lines):\n' +
+        '  --exec <cmd>           spawn per event, pipe event JSON to stdin\n' +
+        '  --webhook <url>        POST event JSON; retries 5xx (1s,2s,4s), no retry on 4xx\n' +
+        '  --notify               OS desktop notification per event\n' +
+        '\n' +
+        'Persistence + replay (forces JetStream path):\n' +
+        '  --durable <name>       named JS consumer; cursor persists across restarts\n' +
+        '  --since <dur|iso>      replay from a point (1h, 7d, ISO timestamp)\n' +
+        '  --replay-all           replay everything in 30d retention\n' +
+        '\n' +
+        'Lifecycle:\n' +
+        '  --until <regex>        exit 0 on first event whose JSON matches\n' +
+        '  --timeout <sec>        exit 0 after N seconds (no events required)\n' +
+        '  --persistent           run until SIGINT (default unless --timeout/--until)\n' +
+        '\n' +
+        'Output shape: every stdout line is one JSON envelope (--no-json for human format).\n' +
+        '  {"type":"event",          "payload":{...},                    "ts":"..."}\n' +
+        '  {"type":"monitor.warning","reason":"...","detail":"...",      "ts":"..."}\n' +
+        '  {"type":"monitor.fatal",  "reason":"...","detail":"...",      "ts":"..."}\n' +
+        'Coverage guarantee: connection drops / consumer death always emit a fatal envelope; never silent.\n' +
+        '\n' +
+        '  --batch <ms>           coalesce events within N ms into one emit\n' +
+        '  --quiet-failures       suppress per-event 5xx/non-zero-exit warnings\n' +
+        '\n' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
+        'Exit 0 on clean exit, 1 on fatal, 2 on bad --grep/--until regex or unavailable JetStream.',
+    )
+    .option('--subject <pattern>', 'NATS subject filter (supports * and > wildcards)')
+    .option('--channel <name>', 'subscribe to unblock.channel.<name>.>')
+    .option('--topic <preset>', 'inbox | firehose | events | channels | dms-to-anyone')
+    .option('--grep <regex>', 'only emit events where payload JSON matches')
+    .option('--kind <kind>', 'envelope.kind filter: dm | firehose | q | a | ack')
+    .option('--from <name>', 'envelope.source filter (case-insensitive)')
+    .option('--exec <cmd>', 'spawn <cmd> per event, pipe event JSON to its stdin')
+    .option('--webhook <url>', 'POST event JSON to URL; retries 5xx (max 3), no retry on 4xx')
+    .option('--notify', 'OS desktop notification per event', false)
+    .option('--durable <name>', 'use named durable JetStream consumer (cursor persists)')
+    .option('--since <dur|iso>', 'JetStream replay from this point (e.g. 1h, 7d, ISO timestamp)')
+    .option('--replay-all', 'JetStream replay everything in retention before live-tail', false)
+    .option('--until <regex>', 'exit 0 on first event whose JSON matches')
+    .option('--timeout <sec>', 'exit after N seconds (no events required)', (v) => Number.parseFloat(v))
+    .option('--persistent', 'run until SIGINT (default unless --timeout/--until)', false)
+    .option('--json', 'emit one JSON envelope per event (default)', true)
+    .option('--no-json', 'human format instead of JSON')
+    .option('--batch <ms>', 'coalesce events within N ms into one emit', (v) => Number.parseInt(v, 10))
+    .option('--quiet-failures', 'suppress per-event 5xx/non-zero-exit warnings', false)
+    .option('--name <handle>', 'display name override')
+    .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        await withPersonaFlag(opts['persona'], async () => {
+          const topicRaw = opts['topic'];
+          const validTopics: ReadonlySet<MonitorTopic> = new Set([
+            'inbox',
+            'firehose',
+            'events',
+            'channels',
+            'dms-to-anyone',
+          ]);
+          if (
+            typeof topicRaw === 'string' &&
+            !validTopics.has(topicRaw as MonitorTopic)
+          ) {
+            process.stderr.write(
+              `error: --topic must be one of inbox|firehose|events|channels|dms-to-anyone (got "${topicRaw}")\n`,
+            );
+            process.exitCode = 1;
+            return;
+          }
+          const kindRaw = opts['kind'];
+          const validKinds: ReadonlySet<MonitorKind> = new Set([
+            'dm',
+            'firehose',
+            'q',
+            'a',
+            'ack',
+          ]);
+          if (
+            typeof kindRaw === 'string' &&
+            !validKinds.has(kindRaw as MonitorKind)
+          ) {
+            process.stderr.write(
+              `error: --kind must be one of dm|firehose|q|a|ack (got "${kindRaw}")\n`,
+            );
+            process.exitCode = 1;
+            return;
+          }
+
+          const result = await runMonitor(
+            { commsFactory: createNatsFactory() },
+            {
+              ...configOverrides(opts),
+              ...(typeof opts['subject'] === 'string' ? { subject: opts['subject'] } : {}),
+              ...(typeof opts['channel'] === 'string' ? { channel: opts['channel'] } : {}),
+              ...(typeof topicRaw === 'string' ? { topic: topicRaw as MonitorTopic } : {}),
+              ...(typeof opts['grep'] === 'string' ? { grep: opts['grep'] } : {}),
+              ...(typeof kindRaw === 'string' ? { kind: kindRaw as MonitorKind } : {}),
+              ...(typeof opts['from'] === 'string' ? { from: opts['from'] } : {}),
+              ...(typeof opts['exec'] === 'string' ? { exec: opts['exec'] } : {}),
+              ...(typeof opts['webhook'] === 'string' ? { webhook: opts['webhook'] } : {}),
+              notify: opts['notify'] === true,
+              ...(typeof opts['durable'] === 'string' ? { durable: opts['durable'] } : {}),
+              ...(typeof opts['since'] === 'string' ? { since: opts['since'] } : {}),
+              replayAll: opts['replayAll'] === true,
+              ...(typeof opts['until'] === 'string' ? { until: opts['until'] } : {}),
+              ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+              persistent: opts['persistent'] === true,
+              // commander's --no-json inverts: opts.json === false ⇒ user passed --no-json.
+              json: opts['json'] !== false,
+              ...(typeof opts['batch'] === 'number' ? { batch: opts['batch'] } : {}),
+              quietFailures: opts['quietFailures'] === true,
+            },
+          );
+          process.exitCode = result.exitCode;
+        });
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        // MonitorRegexError / MonitorJetStreamUnavailableError ⇒ exit 2
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'MonitorRegexError' || name === 'MonitorJetStreamUnavailableError') {
+          process.exitCode = 2;
+        } else {
+          process.exitCode = 1;
+        }
       }
     });
 
