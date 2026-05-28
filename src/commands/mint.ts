@@ -23,6 +23,7 @@
  */
 
 import path from 'node:path';
+import process from 'node:process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import {
   readIdentity,
@@ -79,6 +80,8 @@ export interface MintResult {
 // ─── implementation ──────────────────────────────────────────────────────────
 
 const MAX_TTL_SECONDS = 2_592_000; // 30 days — ADR-144 hard cap
+const MISSING_MACAROON_ROOT_SECRET_HINT =
+  'MACAROON_ROOT_SECRET env var is not set. Export it and retry: `export MACAROON_ROOT_SECRET=<secret>; unblock mint ...`.';
 
 export async function runMint(deps: MintDeps, opts: MintOptions): Promise<MintResult> {
   const fetch = deps.fetcher ?? globalThis.fetch;
@@ -117,6 +120,9 @@ export async function runMint(deps: MintDeps, opts: MintOptions): Promise<MintRe
 
   if (!res.ok) {
     const text = await safeText(res);
+    if (isMissingMacaroonRootSecretError(res.status, text)) {
+      throw new Error(`mint: ${MISSING_MACAROON_ROOT_SECRET_HINT}`);
+    }
     throw new Error(`mint: auth-issuer /v1/nats/token returned ${res.status}: ${text}`);
   }
 
@@ -272,7 +278,9 @@ async function resolveMacaroonRootSecret(
   const srvKey =
     opts.supabaseServiceRoleKey ??
     process.env['SUPABASE_SERVICE_ROLE_KEY'];
-  if (srvKey === undefined || srvKey.trim() === '') return undefined;
+  if (srvKey === undefined || srvKey.trim() === '') {
+    throw new Error(`mint: ${MISSING_MACAROON_ROOT_SECRET_HINT}`);
+  }
 
   const supabaseUrl =
     opts.supabaseUrl ??
@@ -298,6 +306,12 @@ async function resolveMacaroonRootSecret(
   const first = rows[0] as Record<string, unknown>;
   if (typeof first['value'] !== 'string') return undefined;
   return first['value'];
+}
+
+function isMissingMacaroonRootSecretError(status: number, text: string): boolean {
+  if (status !== 400) return false;
+  const lower = text.toLowerCase();
+  return lower.includes('macaroon') && (lower.includes('required') || lower.includes('missing'));
 }
 
 async function safeText(res: Response): Promise<string> {

@@ -15,6 +15,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import { runInvite, clampExpiresInDays } from '../../src/commands/invite.js';
+import { buildProgram, main } from '../../src/main.js';
 import { writeCommsCreds, personaHomeFor } from '../../src/auth/persona-store.js';
 import { makeTmpHome, type TmpHome } from '../_fixtures/tmp-home.js';
 
@@ -33,6 +34,35 @@ function fakeCredsFile(jwtPayload: Record<string, unknown> = { name: 'Viraj-Alph
   const body = Buffer.from(JSON.stringify(jwtPayload)).toString('base64url');
   const jwt = `${header}.${body}.fakesig`;
   return `-----BEGIN NATS USER JWT-----\n${jwt}\n------END NATS USER JWT------\n`;
+}
+
+async function runCli(argv: readonly string[]): Promise<{
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  const originalExitCode = process.exitCode;
+  let stdout = '';
+  let stderr = '';
+  process.exitCode = undefined;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await main(argv);
+    return { code, stdout, stderr };
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    process.exitCode = originalExitCode;
+  }
 }
 
 // ─── clampExpiresInDays ──────────────────────────────────────────────────────
@@ -60,6 +90,14 @@ describe('clampExpiresInDays', () => {
 // ─── validation ──────────────────────────────────────────────────────────────
 
 describe('runInvite validation', () => {
+  it('documents --org as a slug in CLI help', () => {
+    const invite = buildProgram().commands.find((cmd) => cmd.name() === 'invite');
+    expect(invite).toBeDefined();
+    const help = invite?.helpInformation() ?? '';
+    expect(help).toContain('--org <slug>');
+    expect(help).toContain("org slug (e.g. 'unblock'), NOT the full org_did");
+  });
+
   it('throws when --org is empty', async () => {
     await writeCommsCreds(fakeCredsFile());
     await expect(
@@ -70,6 +108,22 @@ describe('runInvite validation', () => {
     ).rejects.toThrow(/--org/);
   });
 
+  it('throws before creds or network when --org is a DID instead of a slug', async () => {
+    let called = false;
+    await expect(
+      runInvite(
+        {
+          fetcher: async () => {
+            called = true;
+            return new Response('{}', { status: 200 });
+          },
+        },
+        { org: 'did:key:z6MkInviteNotSlug', role: 'member' },
+      ),
+    ).rejects.toThrow(/NOT the full org_did/);
+    expect(called).toBe(false);
+  });
+
   it('throws when --role is not in admin|member|guest', async () => {
     await writeCommsCreds(fakeCredsFile());
     // Deliberately pass an invalid role to verify the guard; cast through
@@ -78,7 +132,7 @@ describe('runInvite validation', () => {
     await expect(
       runInvite(
         { fetcher: async () => new Response('{}', { status: 200 }) },
-        { org: 'did:web:unblock.kaeva.app', role: badRole as 'admin' },
+        { org: 'unblock', role: badRole as 'admin' },
       ),
     ).rejects.toThrow(/--role/);
   });
@@ -88,9 +142,21 @@ describe('runInvite validation', () => {
     await expect(
       runInvite(
         { fetcher: async () => new Response('{}', { status: 200 }) },
-        { org: 'did:web:unblock.kaeva.app', role: 'member' },
+        { org: 'unblock', role: 'member' },
       ),
     ).rejects.toThrow(/no creds at .*\. Run `unblock login/);
+  });
+
+  it('CLI exits 1 and prints the slug hint for DID-shaped --org', async () => {
+    const result = await runCli(['invite', '--org', 'did:key:z6MkInviteNotSlug', '--role', 'member']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/NOT the full org_did/);
+  });
+
+  it('CLI exits 1 on creds-read errors', async () => {
+    const result = await runCli(['invite', '--org', 'unblock', '--role', 'member']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/no creds at/);
   });
 });
 
@@ -105,7 +171,7 @@ describe('runInvite happy path', () => {
       invite_code: 'inv_abc123',
       role: 'member',
       expires_at: '2026-06-03T00:00:00.000Z',
-      org_id: 'did:web:unblock.kaeva.app',
+      org_id: 'unblock',
     };
     const mockFetcher: typeof globalThis.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : String(input);
@@ -119,7 +185,7 @@ describe('runInvite happy path', () => {
     const result = await runInvite(
       { fetcher: mockFetcher },
       {
-        org: 'did:web:unblock.kaeva.app',
+        org: 'unblock',
         role: 'member',
         expiresInDays: 14,
         authUrl: 'https://auth.test.example',
@@ -135,7 +201,7 @@ describe('runInvite happy path', () => {
     expect(headers['authorization']).toMatch(/^Bearer /);
     expect(headers['authorization']).not.toBe('Bearer ');
     const sentBody = JSON.parse(String(c?.init.body ?? '{}')) as Record<string, unknown>;
-    expect(sentBody['org_id']).toBe('did:web:unblock.kaeva.app');
+    expect(sentBody['org_id']).toBe('unblock');
     expect(sentBody['role']).toBe('member');
     expect(sentBody['expires_in_days']).toBe(14);
 
@@ -143,7 +209,7 @@ describe('runInvite happy path', () => {
     expect(result.inviteCode).toBe('inv_abc123');
     expect(result.role).toBe('member');
     expect(result.expiresAt).toBe('2026-06-03T00:00:00.000Z');
-    expect(result.orgId).toBe('did:web:unblock.kaeva.app');
+    expect(result.orgId).toBe('unblock');
   });
 
   it('clamps --expires-in-days to 90 before sending to server', async () => {
@@ -159,7 +225,7 @@ describe('runInvite happy path', () => {
     };
     await runInvite(
       { fetcher: mockFetcher },
-      { org: 'did:o', role: 'guest', expiresInDays: 9999 },
+      { org: 'unblock', role: 'guest', expiresInDays: 9999 },
     );
     expect(sentDays).toBe(90);
   });
@@ -175,7 +241,7 @@ describe('runInvite happy path', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     };
-    await runInvite({ fetcher: mockFetcher }, { org: 'did:o', role: 'admin' });
+    await runInvite({ fetcher: mockFetcher }, { org: 'unblock', role: 'admin' });
     expect(sentDays).toBe(7);
   });
 });
@@ -192,7 +258,7 @@ describe('runInvite error path', () => {
       );
 
     await expect(
-      runInvite({ fetcher: mockFetcher }, { org: 'did:o', role: 'member' }),
+      runInvite({ fetcher: mockFetcher }, { org: 'unblock', role: 'member' }),
     ).rejects.toThrow(/forbidden.*not an admin/);
   });
 
@@ -201,7 +267,7 @@ describe('runInvite error path', () => {
     const mockFetcher: typeof globalThis.fetch = async () =>
       new Response('plain text', { status: 500 });
     await expect(
-      runInvite({ fetcher: mockFetcher }, { org: 'did:o', role: 'member' }),
+      runInvite({ fetcher: mockFetcher }, { org: 'unblock', role: 'member' }),
     ).rejects.toThrow(/http_500/);
   });
 });
@@ -230,14 +296,14 @@ describe('runInvite --persona routing', () => {
             invite_code: 'inv_persona',
             role: 'guest',
             expires_at: 't',
-            org_id: 'did:o',
+            org_id: 'unblock',
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       };
       const result = await runInvite(
         { fetcher: mockFetcher },
-        { org: 'did:o', role: 'guest', persona: personaName },
+        { org: 'unblock', role: 'guest', persona: personaName },
       );
       expect(result.inviteCode).toBe('inv_persona');
       expect(bearer).toMatch(/^Bearer /);

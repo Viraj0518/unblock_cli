@@ -68,7 +68,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-function buildProgram(): Command {
+export function buildProgram(): Command {
   const program = new Command();
   program
     .name('unblock')
@@ -199,7 +199,7 @@ function buildProgram(): Command {
         'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
         'Exit 0 on success, 1 on error.',
     )
-    .requiredOption('--org <org_did>', 'org DID (e.g. did:web:unblock.kaeva.app)')
+    .requiredOption('--org <slug>', "org slug (e.g. 'unblock'), NOT the full org_did")
     .requiredOption('--role <role>', 'admin | member | guest')
     .option('--expires-in-days <n>', 'invite TTL in days (default 7, max 90)', (v) =>
       Number.parseInt(v, 10),

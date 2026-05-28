@@ -4,7 +4,14 @@ import { writeIdentity } from '../../src/auth/persona-store.js';
 import { makeTmpHome, type TmpHome } from '../_fixtures/tmp-home.js';
 
 let tmp: TmpHome;
+let prevMacaroonRootSecret: string | undefined;
+let prevSupabaseServiceRoleKey: string | undefined;
+
 beforeEach(async () => {
+  prevMacaroonRootSecret = process.env['MACAROON_ROOT_SECRET'];
+  prevSupabaseServiceRoleKey = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+  process.env['MACAROON_ROOT_SECRET'] = 'test-macaroon-root-secret';
+  delete process.env['SUPABASE_SERVICE_ROLE_KEY'];
   tmp = await makeTmpHome();
   await writeIdentity({
     did: 'did:key:z6MkTestAlpha123',
@@ -15,6 +22,10 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await tmp.dispose();
+  if (prevMacaroonRootSecret === undefined) delete process.env['MACAROON_ROOT_SECRET'];
+  else process.env['MACAROON_ROOT_SECRET'] = prevMacaroonRootSecret;
+  if (prevSupabaseServiceRoleKey === undefined) delete process.env['SUPABASE_SERVICE_ROLE_KEY'];
+  else process.env['SUPABASE_SERVICE_ROLE_KEY'] = prevSupabaseServiceRoleKey;
 });
 
 // ─── parseTtl ─────────────────────────────────────────────────────────────────
@@ -77,6 +88,33 @@ describe('runMint --print (happy path)', () => {
 // ─── runMint error path ────────────────────────────────────────────────────────
 
 describe('runMint error path', () => {
+  it('fails fast with MACAROON_ROOT_SECRET hint when no local secret source exists', async () => {
+    delete process.env['MACAROON_ROOT_SECRET'];
+    delete process.env['SUPABASE_SERVICE_ROLE_KEY'];
+    let called = false;
+    const mockFetcher: typeof globalThis.fetch = async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    };
+
+    await expect(
+      runMint({ fetcher: mockFetcher }, { print: true }),
+    ).rejects.toThrow(/MACAROON_ROOT_SECRET env var is not set/);
+    expect(called).toBe(false);
+  });
+
+  it('rewrites upstream missing-macaroon errors to the env-var remediation', async () => {
+    const mockFetcher: typeof globalThis.fetch = async () =>
+      new Response('{"error":"macaroon is required"}', {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+
+    await expect(
+      runMint({ fetcher: mockFetcher }, { print: true }),
+    ).rejects.toThrow(/Export it and retry: `export MACAROON_ROOT_SECRET=<secret>; unblock mint \.\.\.`/);
+  });
+
   it('throws when auth-issuer returns non-200', async () => {
     const mockFetcher: typeof globalThis.fetch = async () =>
       new Response('{"error":"unauthorized"}', {

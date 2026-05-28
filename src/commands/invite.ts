@@ -1,5 +1,5 @@
 /**
- * `unblock invite --org <did> --role <role> [--expires-in-days N] [--json] [--persona NAME]`
+ * `unblock invite --org <slug> --role <role> [--expires-in-days N] [--json] [--persona NAME]`
  *
  * Mint an org invite code that another agent can redeem via `unblock login <code>`.
  *
@@ -11,7 +11,7 @@
  *   1. Resolve persona dir (--persona NAME > UNBLOCK_HOME env > ~/.unblock).
  *   2. Read `<persona-dir>/comms-v3.creds`, extract the NATS User JWT.
  *   3. POST <authUrl>/v1/org/invite with `Authorization: Bearer <jwt>` and
- *      JSON body `{ org_id, role, expires_in_days? }`.
+ *      JSON body `{ org_id, role, expires_in_days? }`, where org_id is the org slug.
  *   4. Print invite_code + expires_at to stdout (or full JSON with --json).
  *
  * Auth-issuer endpoint consumed:
@@ -41,7 +41,7 @@ export interface InviteDeps {
 export type InviteRole = 'admin' | 'member' | 'guest';
 
 export interface InviteOptions extends ConfigOverrides {
-  /** Org DID to invite into (e.g. did:web:unblock.kaeva.app). Required. */
+  /** Org slug to invite into (e.g. unblock), not the full org_did. Required. */
   readonly org: string;
   /** Role to grant the invitee. Required. */
   readonly role: InviteRole;
@@ -73,6 +73,8 @@ const VALID_ROLES: readonly InviteRole[] = ['admin', 'member', 'guest'];
 const MAX_EXPIRES_DAYS = 90;
 const MIN_EXPIRES_DAYS = 1;
 const DEFAULT_EXPIRES_DAYS = 7;
+const ORG_SLUG_RE = /^[a-z0-9-]{1,64}$/;
+const ORG_SLUG_HINT = "org slug (e.g. 'unblock'), NOT the full org_did";
 
 export async function runInvite(deps: InviteDeps, opts: InviteOptions): Promise<InviteResult> {
   const fetch = deps.fetcher ?? globalThis.fetch;
@@ -80,7 +82,12 @@ export async function runInvite(deps: InviteDeps, opts: InviteOptions): Promise<
   // Validate required + role enum up front so callers get clean errors.
   const org = opts.org.trim();
   if (org === '') {
-    throw new Error('invite: --org <org_did> is required');
+    throw new Error(`invite: --org <slug> is required; use ${ORG_SLUG_HINT}.`);
+  }
+  if (!isOrgSlug(org)) {
+    throw new Error(
+      `invite: --org must match ${ORG_SLUG_RE.source}; use ${ORG_SLUG_HINT}.`,
+    );
   }
   if (!VALID_ROLES.includes(opts.role)) {
     throw new Error(
@@ -155,6 +162,11 @@ export function clampExpiresInDays(n: number): number {
   if (rounded < MIN_EXPIRES_DAYS) return MIN_EXPIRES_DAYS;
   if (rounded > MAX_EXPIRES_DAYS) return MAX_EXPIRES_DAYS;
   return rounded;
+}
+
+/** Return true when a value matches the auth-issuer org slug contract. */
+export function isOrgSlug(value: string): boolean {
+  return ORG_SLUG_RE.test(value);
 }
 
 function parseInviteResponse(body: unknown, requestedRole: InviteRole): InviteResult {
