@@ -19,7 +19,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "unblock-skill.md"
   ],
   "engines": {
     "node": ">=22.0.0"
