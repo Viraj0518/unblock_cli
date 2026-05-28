@@ -194,4 +194,18 @@ describe('runHealth --json output shape', () => {
       expect(c).toHaveProperty('lastError');
     }
   });
+
+  it('includes abbreviated subjects at top level', async () => {
+    const { factory } = createMockCommsFactory();
+    const result = await runHealth(
+      { commsFactory: factory, fetcher: async () => new Response('{}', { status: 200 }) },
+      { component: 'auth' },
+    );
+
+    expect(result.subjects).toEqual({
+      canonical_chat_name: 'viraj-alpha',
+      dm_inbox_subject: 'unblock.chat.ws.ws-default.to.viraj-alpha',
+      firehose_subject: 'unblock.chat.ws.ws-default.firehose',
+    });
+  });
 });

@@ -27,6 +27,7 @@
 import type { CommsFactory } from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
 import { DEFAULT_AUTH_URL, DEFAULT_SUBSTRATE_URL } from '../sdk/http-substrate.js';
+import { buildSubjectSummary, type SubjectSummary } from './subjects.js';
 
 export type ComponentName = 'auth' | 'broker' | 'substrate' | 'audit';
 export type HealthStatus = 'ok' | 'degraded' | 'down';
@@ -55,6 +56,7 @@ export interface HealthOptions extends ConfigOverrides {
 
 export interface HealthResult {
   readonly components: readonly ComponentHealth[];
+  readonly subjects: SubjectSummary;
   readonly allOk: boolean;
 }
 
@@ -75,7 +77,14 @@ export async function runHealth(deps: HealthDeps, opts: HealthOptions): Promise<
   );
 
   const allOk = results.every((r) => r.status === 'ok');
-  return { components: results, allOk };
+  return {
+    components: results,
+    subjects: buildSubjectSummary({
+      workspaceId: cfg.workspaceId,
+      chatName: cfg.chatName ?? 'me',
+    }),
+    allOk,
+  };
 }
 
 // ─── individual checks ────────────────────────────────────────────────────────

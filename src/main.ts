@@ -36,6 +36,7 @@ import { runMonitor, type MonitorKind, type MonitorTopic } from './commands/moni
 import { runSend } from './commands/send.js';
 import { runTrace } from './commands/trace.js';
 import { runHealth, type ComponentName } from './commands/health.js';
+import { formatSubjects, runSubjects } from './commands/subjects.js';
 import {
   cmdProfileAdd,
   cmdProfileList,
@@ -770,7 +771,10 @@ function buildProgram(): Command {
           );
 
           if (opts['json'] === true) {
-            process.stdout.write(`${JSON.stringify(result.components, null, 2)}\n`);
+            process.stdout.write(`${JSON.stringify({
+              components: result.components,
+              subjects: result.subjects,
+            }, null, 2)}\n`);
           } else {
             process.stdout.write(`${'component'.padEnd(12)}${'status'.padEnd(12)}${'latency_ms'.padEnd(14)}last_error\n`);
             process.stdout.write(`${'─'.repeat(70)}\n`);
@@ -783,6 +787,30 @@ function buildProgram(): Command {
           }
 
           process.exitCode = result.allOk ? 0 : 1;
+        });
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('subjects')
+    .description(
+      'Print the current persona NATS subject map and JWT pub/sub allowlists. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
+    )
+    .option('--json', 'emit structured JSON', false)
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        await withPersonaFlag(opts['persona'], async () => {
+          const result = await runSubjects();
+          if (opts['json'] === true) {
+            process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+          } else {
+            process.stdout.write(formatSubjects(result));
+          }
         });
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
