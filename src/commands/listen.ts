@@ -1,6 +1,8 @@
 /**
  * `unblock listen [--subject PATTERN] [--channel NAME] [--filter REGEX]
- *                [--json] [--timeout SECONDS]`
+ *                [--json] [--timeout SECONDS]
+ *                [--since DURATION|ISO] [--replay-all] [--durable NAME]
+ *                [--no-ack]`
  *
  * Long-running NATS subscribe for receive loops.
  *
@@ -15,17 +17,40 @@
  * --filter REGEX: only print messages where JSON.stringify(payload) matches regex.
  * --timeout SECONDS: exit after N seconds (exit 0); omit = run forever.
  *
- * Auto-remints on JWT expiry: if connect fails with a credentials error, tries
- * once to run `runMint({ print: false })` then reconnects.
+ * Auto-ack (fixes `unblock send --ack` always-timeout bug, 2026-05-28):
+ *   When an incoming envelope carries a NATS request-reply `reply` subject (set
+ *   by `unblock send --ack`), this listener publishes a tiny ack envelope to
+ *   that subject BEFORE printing. Opt out with --no-ack. Ack shape:
+ *     {kind:"ack", source:<my-chat-name>, in_reply_to:<envelope.message_id>,
+ *      received_at:<iso-8601>, ts:<unix-ms>}
+ *
+ * JetStream replay (issue #9: messages sent while offline are dropped):
+ *   NATS core pub/sub is live-tail only. The `UNBLOCK_CHAT` JetStream stream
+ *   retains 30 days of messages server-side; opt into replay with:
+ *     --since 1h | 30m | 7d | <ISO>   replay from that point onward
+ *     --replay-all                    replay everything in retention
+ *     --durable NAME                  named consumer; cursor persists
+ *   Any of those three flags switches to JetStream consume. Bare `listen`
+ *   keeps the raw subscribe code-path (lower latency, no replay).
  *
  * Exit 0: Ctrl+C or timeout.
  * Exit 1: auth failure / connection lost / unrecoverable error.
- * Exit 2: filter pattern is invalid regex.
+ * Exit 2: filter pattern is invalid regex, OR a replay flag was passed but
+ *         the comms client doesn't expose a JetStream surface.
  */
 
-import type { CommsFactory, Subscription } from '../sdk/types.js';
+import type {
+  CommsClient,
+  CommsFactory,
+  DeliverPolicy,
+  JetStreamFrame,
+  Subscription,
+} from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
 import { normalizeChatName } from '../comms/wire.js';
+
+/** JetStream stream name configured server-side. */
+const UNBLOCK_CHAT_STREAM = 'UNBLOCK_CHAT';
 
 export interface ListenDeps {
   readonly commsFactory: CommsFactory;
@@ -45,6 +70,26 @@ export interface ListenOptions extends ConfigOverrides {
   readonly json?: boolean;
   /** Exit after N seconds. */
   readonly timeout?: number;
+  /**
+   * Disable auto-ack on incoming request-reply messages. Default is to ack
+   * (fixes the 2026-05-28 `send --ack` always-timeout bug).
+   */
+  readonly noAck?: boolean;
+  /**
+   * Replay messages from a point in time: ISO-8601 timestamp OR a duration
+   * like `1h`, `30m`, `7d`, `45s`. Switches to JetStream consume.
+   */
+  readonly since?: string;
+  /**
+   * Replay everything in the JetStream retention window (30d server-side).
+   * Switches to JetStream consume.
+   */
+  readonly replayAll?: boolean;
+  /**
+   * Use a named durable JetStream consumer so the cursor persists across
+   * restarts. Switches to JetStream consume.
+   */
+  readonly durable?: string;
 }
 
 export interface ListenResult {
@@ -77,12 +122,92 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
     ...(cfg.credsPath !== undefined ? { credsPath: cfg.credsPath } : {}),
   });
 
+  // Decide replay vs live-tail BEFORE setting up subscribers. Any replay flag
+  // → JetStream consume; otherwise raw subscribe (unchanged behaviour).
+  const replayMode = pickReplayMode(opts);
+
   let received = 0;
   let exitReason: 'timeout' | 'signal' | 'aborted' = 'signal';
 
   // Set up timeout
   let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  // Per-message handler — shared between raw subscribe and JetStream paths.
+  // Returns false when the caller should stop iterating (timed out).
+  const ackEnabled = opts.noAck !== true;
+  const myChatName = cfg.chatName ?? 'me';
+  const handleFrame = (
+    frame: { readonly subject: string; readonly data: Uint8Array; readonly reply?: string },
+  ): boolean => {
+    if (timedOut) return false;
+    const arrivedAt = getNow();
+    const payloadStr = new TextDecoder().decode(frame.data);
+
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(payloadStr) as unknown;
+    } catch {
+      parsedPayload = payloadStr;
+    }
+
+    // Auto-ack BEFORE filter check + print so a non-matching filter still
+    // unblocks the sender (the sender doesn't know our filter). Two paths:
+    //   1. NATS request-reply: frame.reply set → publish ack there.
+    //   2. Envelope-level reply_to (transport-agnostic; works through
+    //      JetStream where `reply` isn't preserved): publish to that subject.
+    if (ackEnabled) {
+      const ackSubject =
+        frame.reply ?? extractReplyToFromEnvelope(parsedPayload);
+      if (ackSubject !== undefined && ackSubject !== '') {
+        publishAck(client, ackSubject, parsedPayload, myChatName, arrivedAt);
+      }
+    }
+
+    // Filter check
+    if (filterRe !== undefined && !filterRe.test(payloadStr)) return true;
+
+    received++;
+
+    if (opts.json === true) {
+      const msg = {
+        subject: frame.subject,
+        payload: parsedPayload,
+        ts: new Date(arrivedAt).toISOString(),
+        headers: {},
+        latency_ms: 0,
+      };
+      process.stdout.write(`${JSON.stringify(msg)}\n`);
+    } else {
+      const ts = new Date(arrivedAt).toISOString();
+      const preview =
+        typeof parsedPayload === 'string'
+          ? parsedPayload
+          : JSON.stringify(parsedPayload);
+      const snippet = preview.length > 200 ? `${preview.slice(0, 200)}…` : preview;
+      process.stdout.write(`${ts} [${frame.subject}] ${snippet}\n`);
+    }
+    return true;
+  };
+
+  if (replayMode !== null) {
+    const jsResult = await runJetStreamReplay({
+      client,
+      subject,
+      replayMode,
+      ...(opts.durable !== undefined ? { durableName: opts.durable } : {}),
+      ...(opts.timeout !== undefined ? { timeoutSec: opts.timeout } : {}),
+      ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+      handleFrame,
+      onTimedOut: () => {
+        timedOut = true;
+      },
+    });
+    // `received` is incremented by handleFrame against the runListen closure,
+    // not against runJetStreamReplay's local counter — return it here.
+    return { received, exitReason: jsResult.exitReason };
+  }
+
   const sub = client.subscribe(subject);
 
   // ── P0 defensive subscribe: legacy mixed-case chat_name ────────────────────
@@ -138,41 +263,8 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
   const pumpOne = async (s: Subscription): Promise<void> => {
     try {
       for await (const frame of s) {
-        if (timedOut) break;
-        const arrivedAt = getNow();
-        const raw = frame.data;
-        const payloadStr = new TextDecoder().decode(raw);
-
-        // Filter check
-        if (filterRe !== undefined && !filterRe.test(payloadStr)) continue;
-
-        received++;
-
-        let parsedPayload: unknown;
-        try {
-          parsedPayload = JSON.parse(payloadStr) as unknown;
-        } catch {
-          parsedPayload = payloadStr;
-        }
-
-        if (opts.json === true) {
-          const msg = {
-            subject: frame.subject,
-            payload: parsedPayload,
-            ts: new Date(arrivedAt).toISOString(),
-            headers: {},
-            latency_ms: 0, // NATS doesn't expose round-trip from pub side without reply-to
-          };
-          process.stdout.write(`${JSON.stringify(msg)}\n`);
-        } else {
-          const ts = new Date(arrivedAt).toISOString();
-          const preview =
-            typeof parsedPayload === 'string'
-              ? parsedPayload
-              : JSON.stringify(parsedPayload);
-          const snippet = preview.length > 200 ? `${preview.slice(0, 200)}…` : preview;
-          process.stdout.write(`${ts} [${frame.subject}] ${snippet}\n`);
-        }
+        const carryOn = handleFrame(frame);
+        if (!carryOn) break;
       }
     } catch {
       // Iterator closed (unsubscribed) — normal shutdown
@@ -217,9 +309,215 @@ function resolveSubject(
   return `unblock.chat.ws.${cfg.workspaceId}.to.${chatName}`;
 }
 
+/**
+ * Pick the JetStream deliver-policy from the user's replay flags. Returns
+ * null when no replay flag was given (caller uses raw subscribe instead).
+ *
+ * Precedence: --replay-all > --since > --durable.
+ */
+function pickReplayMode(opts: ListenOptions): DeliverPolicy | null {
+  if (opts.replayAll === true) return { kind: 'all' };
+  if (opts.since !== undefined && opts.since.trim() !== '') {
+    const startTime = parseSinceToIso(opts.since.trim());
+    return { kind: 'by_start_time', startTime };
+  }
+  if (opts.durable !== undefined && opts.durable.trim() !== '') {
+    return { kind: 'all' };
+  }
+  return null;
+}
+
+/**
+ * Parse `--since` value into an ISO-8601 timestamp. Accepts:
+ *   - relative durations: `1h`, `30m`, `7d`, `45s`, `2w`
+ *   - ISO-8601 timestamps: `2026-05-27T12:00:00Z` (passed through)
+ */
+export function parseSinceToIso(value: string, now: number = Date.now()): string {
+  if (value.includes('T') || /\d{4}-\d{2}-\d{2}/.test(value)) {
+    const t = Date.parse(value);
+    if (!Number.isNaN(t)) return new Date(t).toISOString();
+  }
+  const match = /^(\d+)\s*([smhdw])$/i.exec(value);
+  if (match === null) throw new ListenSinceParseError(value);
+  const n = Number.parseInt(match[1] ?? '0', 10);
+  const unit = (match[2] ?? '').toLowerCase();
+  const multMs: Record<string, number> = {
+    s: 1000,
+    m: 60_000,
+    h: 3_600_000,
+    d: 86_400_000,
+    w: 604_800_000,
+  };
+  const mult = multMs[unit];
+  if (mult === undefined) throw new ListenSinceParseError(value);
+  return new Date(now - n * mult).toISOString();
+}
+
+/**
+ * Extract an envelope-level reply-to subject if present. Senders that fan
+ * out through JetStream lose the NATS `reply` header, so they include
+ * `reply_to` in the JSON envelope.
+ */
+function extractReplyToFromEnvelope(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const rec = payload as Record<string, unknown>;
+  const v = rec['reply_to'];
+  return typeof v === 'string' && v !== '' ? v : undefined;
+}
+
+/**
+ * Publish an ack envelope. Fire-and-forget — never throws. Interop shape
+ * with `unblock send --ack`'s consumer (commands/send.ts): matches on
+ * `kind==='ack'` OR `in_reply_to===<message_id>`.
+ */
+function publishAck(
+  client: CommsClient,
+  ackSubject: string,
+  envelope: unknown,
+  source: string,
+  receivedAtMs: number,
+): void {
+  let inReplyTo: string | undefined;
+  if (typeof envelope === 'object' && envelope !== null) {
+    const rec = envelope as Record<string, unknown>;
+    if (typeof rec['message_id'] === 'string') inReplyTo = rec['message_id'];
+  }
+  const ack = {
+    kind: 'ack',
+    source,
+    received_at: new Date(receivedAtMs).toISOString(),
+    ts: receivedAtMs,
+    ...(inReplyTo !== undefined ? { in_reply_to: inReplyTo } : {}),
+  };
+  try {
+    client.publish(ackSubject, new TextEncoder().encode(JSON.stringify(ack)));
+  } catch {
+    /* ack is best-effort */
+  }
+}
+
+interface JetStreamReplayDeps {
+  readonly client: CommsClient;
+  readonly subject: string;
+  readonly replayMode: DeliverPolicy;
+  readonly durableName?: string;
+  readonly timeoutSec?: number;
+  readonly signal?: AbortSignal;
+  readonly handleFrame: (
+    frame: { readonly subject: string; readonly data: Uint8Array; readonly reply?: string },
+  ) => boolean;
+  readonly onTimedOut: () => void;
+}
+
+async function runJetStreamReplay(d: JetStreamReplayDeps): Promise<ListenResult> {
+  if (d.client.jetstream === undefined) {
+    try {
+      await d.client.close();
+    } catch {
+      /* best-effort */
+    }
+    throw new ListenJetStreamUnavailableError();
+  }
+
+  let exitReason: 'timeout' | 'signal' | 'aborted' = 'signal';
+
+  const abortCtrl = new AbortController();
+  const stopFn = (): void => {
+    d.onTimedOut();
+    abortCtrl.abort();
+  };
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  if (d.timeoutSec !== undefined && d.timeoutSec > 0) {
+    timeoutHandle = setTimeout(() => {
+      exitReason = 'timeout';
+      stopFn();
+    }, d.timeoutSec * 1000);
+  }
+  if (d.signal !== undefined) {
+    if (d.signal.aborted) {
+      exitReason = 'aborted';
+      stopFn();
+    } else {
+      d.signal.addEventListener(
+        'abort',
+        () => {
+          exitReason = 'aborted';
+          stopFn();
+        },
+        { once: true },
+      );
+    }
+  }
+
+  const consumeOpts = {
+    stream: UNBLOCK_CHAT_STREAM,
+    filterSubject: d.subject,
+    deliverPolicy: d.replayMode,
+    signal: abortCtrl.signal,
+    ...(d.durableName !== undefined ? { durableName: d.durableName } : {}),
+  };
+
+  try {
+    for await (const frame of d.client.jetstream.consume(consumeOpts)) {
+      const carryOn = d.handleFrame(frameFromJs(frame));
+      // Always ack so the durable cursor advances.
+      try {
+        frame.ack();
+      } catch {
+        /* best-effort */
+      }
+      if (!carryOn) break;
+    }
+  } catch (err) {
+    if (!abortCtrl.signal.aborted) {
+      try {
+        await d.client.close();
+      } catch {
+        /* best-effort */
+      }
+      throw err;
+    }
+  }
+
+  if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  try {
+    await d.client.close();
+  } catch {
+    /* best-effort */
+  }
+  // `received` is owned by the caller's closure-bound handleFrame; only
+  // exitReason needs propagating back.
+  return { received: 0, exitReason };
+}
+
+function frameFromJs(
+  frame: JetStreamFrame,
+): { readonly subject: string; readonly data: Uint8Array; readonly reply?: string } {
+  return { subject: frame.subject, data: frame.data };
+}
+
 export class ListenFilterError extends Error {
   constructor(pattern: string) {
     super(`listen: invalid --filter regex "${pattern}"`);
     this.name = 'ListenFilterError';
+  }
+}
+
+export class ListenSinceParseError extends Error {
+  constructor(value: string) {
+    super(
+      `listen: --since "${value}" is neither an ISO-8601 timestamp nor a duration like 1h/30m/7d.`,
+    );
+    this.name = 'ListenSinceParseError';
+  }
+}
+
+export class ListenJetStreamUnavailableError extends Error {
+  constructor() {
+    super(
+      'listen: --since / --replay-all / --durable require a JetStream-capable broker. ' +
+        'The current comms client does not expose one.',
+    );
+    this.name = 'ListenJetStreamUnavailableError';
   }
 }

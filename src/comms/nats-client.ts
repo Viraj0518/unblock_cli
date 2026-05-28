@@ -14,7 +14,14 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import type { CommsClient, CommsFactory, Subscription } from '../sdk/types.js';
+import type {
+  CommsClient,
+  CommsFactory,
+  JetStream,
+  JetStreamConsumeOptions,
+  JetStreamFrame,
+  Subscription,
+} from '../sdk/types.js';
 
 export interface AssertSecureOptions {
   /** Override env-driven check (test injection). */
@@ -99,11 +106,37 @@ interface NatsConnection {
   flush(): Promise<void>;
   close(): Promise<void>;
   drain(): Promise<void>;
+  jetstreamManager(): Promise<NatsJsm>;
+  jetstream(): NatsJsClient;
 }
 
 interface NatsSubscription {
   unsubscribe(): void;
-  [Symbol.asyncIterator](): AsyncIterator<{ subject: string; data: Uint8Array }>;
+  [Symbol.asyncIterator](): AsyncIterator<{ subject: string; data: Uint8Array; reply?: string }>;
+}
+
+interface NatsJsMsg {
+  readonly subject: string;
+  readonly data: Uint8Array;
+  ack(): void;
+}
+interface NatsConsumerMessages extends AsyncIterable<NatsJsMsg> {
+  stop(): Promise<void>;
+}
+interface NatsConsumer {
+  consume(): Promise<NatsConsumerMessages>;
+}
+interface NatsConsumerApi {
+  add(stream: string, cfg: Record<string, unknown>): Promise<unknown>;
+}
+interface NatsJsm {
+  readonly consumers: NatsConsumerApi;
+}
+interface NatsConsumersFacade {
+  get(stream: string, name: string): Promise<NatsConsumer>;
+}
+interface NatsJsClient {
+  readonly consumers: NatsConsumersFacade;
 }
 
 function wrapConnection(conn: NatsConnection): CommsClient {
@@ -128,5 +161,104 @@ function wrapConnection(conn: NatsConnection): CommsClient {
         await conn.close();
       }
     },
+    jetstream: wrapJetStream(conn),
   };
+}
+
+function wrapJetStream(conn: NatsConnection): JetStream {
+  return {
+    consume(opts: JetStreamConsumeOptions): AsyncIterable<JetStreamFrame> {
+      return jsConsumeIterable(conn, opts);
+    },
+  };
+}
+
+function jsConsumeIterable(
+  conn: NatsConnection,
+  opts: JetStreamConsumeOptions,
+): AsyncIterable<JetStreamFrame> {
+  return {
+    [Symbol.asyncIterator]: (): AsyncIterator<JetStreamFrame> => {
+      let inner: AsyncIterator<NatsJsMsg> | undefined;
+      let messages: NatsConsumerMessages | undefined;
+      let setupErr: Error | undefined;
+      let setupOnce: Promise<void> | undefined;
+      const setup = async (): Promise<void> => {
+        try {
+          const cfg = buildConsumerConfig(opts);
+          const jsm = await conn.jetstreamManager();
+          const isEphemeral = opts.durableName === undefined;
+          const consumerName: string =
+            opts.durableName ?? `unblock-listen-${randomToken()}`;
+          await jsm.consumers.add(opts.stream, {
+            ...cfg,
+            name: consumerName,
+            ...(isEphemeral ? {} : { durable_name: consumerName }),
+            ...(isEphemeral ? { inactive_threshold: 60_000_000_000 } : {}),
+          });
+          const consumer = await conn.jetstream().consumers.get(opts.stream, consumerName);
+          messages = await consumer.consume();
+          inner = messages[Symbol.asyncIterator]();
+          if (opts.signal !== undefined) {
+            const abort = (): void => {
+              messages?.stop().catch(() => undefined);
+            };
+            if (opts.signal.aborted) abort();
+            else opts.signal.addEventListener('abort', abort, { once: true });
+          }
+        } catch (err) {
+          setupErr = err instanceof Error ? err : new Error(String(err));
+        }
+      };
+      return {
+        next: async (): Promise<IteratorResult<JetStreamFrame>> => {
+          if (setupOnce === undefined) setupOnce = setup();
+          await setupOnce;
+          if (setupErr !== undefined) throw setupErr;
+          if (inner === undefined) return { value: undefined, done: true };
+          const r = await inner.next();
+          if (r.done === true) return { value: undefined, done: true };
+          const m = r.value;
+          return {
+            value: {
+              subject: m.subject,
+              data: m.data,
+              ack: () => {
+                m.ack();
+              },
+            },
+            done: false,
+          };
+        },
+        return: async (): Promise<IteratorResult<JetStreamFrame>> => {
+          await messages?.stop().catch(() => undefined);
+          return { value: undefined, done: true };
+        },
+      };
+    },
+  };
+}
+
+function buildConsumerConfig(opts: JetStreamConsumeOptions): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    filter_subject: opts.filterSubject,
+    ack_policy: 'explicit',
+  };
+  switch (opts.deliverPolicy.kind) {
+    case 'all':
+      base['deliver_policy'] = 'all';
+      break;
+    case 'new':
+      base['deliver_policy'] = 'new';
+      break;
+    case 'by_start_time':
+      base['deliver_policy'] = 'by_start_time';
+      base['opt_start_time'] = opts.deliverPolicy.startTime;
+      break;
+  }
+  return base;
+}
+
+function randomToken(): string {
+  return Math.random().toString(36).slice(2, 10);
 }
