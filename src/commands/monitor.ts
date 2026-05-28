@@ -2,7 +2,8 @@
  * `unblock monitor [--subject PATTERN | --channel NAME | --topic PRESET]
  *                  [--grep REGEX] [--kind dm|firehose|q|a|ack] [--from NAME]
  *                  [--exec CMD] [--webhook URL] [--notify]
- *                  [--durable NAME] [--since DURATION|ISO] [--replay-all]
+ *                  [--durable NAME] [--reset-durable]
+ *                  [--since DURATION|ISO] [--replay-all]
  *                  [--until REGEX] [--timeout SEC] [--persistent]
  *                  [--json] [--no-json] [--batch MS] [--quiet-failures]
  *                  [--persona NAME] [--nats-url URL] [--name HANDLE]`
@@ -41,6 +42,7 @@
  *
  * Persistence + replay (forces JetStream consume path):
  *   --durable NAME             named JetStream consumer; cursor PERSISTS
+ *   --reset-durable            delete/recreate named durable before consume
  *   --since DURATION|ISO       replay from a point (1h, 7d, 2026-05-27T...)
  *   --replay-all               replay everything in 30d retention
  *
@@ -125,6 +127,7 @@ export interface MonitorOptions extends ConfigOverrides {
   readonly webhook?: string;
   readonly notify?: boolean;
   readonly durable?: string;
+  readonly resetDurable?: boolean;
   readonly since?: string;
   readonly replayAll?: boolean;
   readonly until?: string;
@@ -189,6 +192,9 @@ export async function runMonitor(
 ): Promise<MonitorResult> {
   const cfg = await resolveConfig(opts);
   const getNow = deps.now ?? Date.now;
+  if (opts.resetDurable === true && opts.durable === undefined) {
+    throw new MonitorResetDurableError();
+  }
   const stdout = deps.stdoutWrite ?? ((s: string) => process.stdout.write(s));
   const stderr = deps.stderrWrite ?? ((s: string) => process.stderr.write(s));
 
@@ -314,6 +320,7 @@ export async function runMonitor(
           subject,
           replayMode,
           ...(opts.durable !== undefined ? { durableName: opts.durable } : {}),
+          ...(opts.resetDurable === true ? { resetDurable: true } : {}),
           lifecycle,
         },
         onFrame,
@@ -924,6 +931,7 @@ interface JsSourceDeps {
   readonly subject: string;
   readonly replayMode: DeliverPolicy;
   readonly durableName?: string;
+  readonly resetDurable?: boolean;
   readonly lifecycle: Lifecycle;
 }
 
@@ -952,6 +960,7 @@ async function runJetStreamSource(
     deliverPolicy: d.replayMode,
     signal: abortCtrl.signal,
     ...(d.durableName !== undefined ? { durableName: d.durableName } : {}),
+    ...(d.resetDurable === true ? { resetDurable: true } : {}),
   };
 
   let pumpFatal = false;
@@ -1009,5 +1018,12 @@ export class MonitorJetStreamUnavailableError extends Error {
         'The current comms client does not expose one.',
     );
     this.name = 'MonitorJetStreamUnavailableError';
+  }
+}
+
+export class MonitorResetDurableError extends Error {
+  constructor() {
+    super('monitor: --reset-durable requires --durable NAME.');
+    this.name = 'MonitorResetDurableError';
   }
 }
