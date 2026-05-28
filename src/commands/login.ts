@@ -29,6 +29,7 @@ import {
   writeIdentity,
   type PersonaIdentity,
 } from '../auth/persona-store.js';
+import { normalizeChatName } from '../comms/wire.js';
 import type { SubstrateFactory } from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
 
@@ -72,6 +73,11 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
   // parent CLAUDE.md §"Identity convention").
   let identity = await readIdentity();
   let mintedNewIdentity = false;
+  // Track the previously-stored handle so we can detect a true rename
+  // (issue #14): when --agent-name differs from what's on disk, the user
+  // wants the new handle to take effect on the wire, not just in
+  // identity.json.
+  const priorAgentName: string | null = identity?.agentName ?? null;
   if (identity === null) {
     const minted = await mintDidKey();
     identity = {
@@ -95,7 +101,41 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
   const substrate = deps.substrateFactory.create({ authUrl: cfg.authUrl });
   const enrolled = await substrate.enroll({ inviteCode: opts.inviteCode, identity });
 
-  // Step 3: persist creds + env.
+  // Step 3: pick the chat_name we'll actually publish.
+  //
+  // Issue #14 (2026-05-28): on re-login the server reuses the existing
+  // identity row and returns the stale chat_name it minted on first enroll.
+  // If the user passed `--agent-name X` AND X differs from what was on disk,
+  // they want messages to route to `X`, not to the stale random handle.
+  //
+  // Single client-side fix point: lowercase X via the same `normalizeChatName`
+  // helper the wire layer uses for DM subjects, then override the value we
+  // write to `comms-v3.env`. This matches the `canonicalChatName()` logic in
+  // the auth-issuer (services/auth-issuer, PR #328) so the same string lands
+  // on both sides of the wire without a new round-trip or endpoint.
+  //
+  // Edge cases:
+  //   * --agent-name not passed → priorAgentName === identity.agentName,
+  //     no override (standard reconnect flow keeps server-supplied value).
+  //   * --agent-name passed but normalizes to the server value → no-op.
+  //   * --agent-name passed and renames → override + stderr line.
+  const desiredChatName = normalizeChatName(identity.agentName);
+  let chatName = enrolled.name;
+  const isRename =
+    !mintedNewIdentity &&
+    priorAgentName !== null &&
+    opts.agentName !== undefined &&
+    opts.agentName.trim() !== '' &&
+    opts.agentName.trim() !== priorAgentName;
+  if (isRename && desiredChatName !== enrolled.name) {
+    process.stderr.write(
+      `chat_name updated: ${enrolled.name} → ${desiredChatName} ` +
+        `(client-side override; --agent-name changed from "${priorAgentName}" to "${identity.agentName}")\n`,
+    );
+    chatName = desiredChatName;
+  }
+
+  // Step 4: persist creds + env.
   //
   // The substrate API key (P1 fix · 2026-05-27) flows through here on
   // every enroll: server mints `unb_<hex>` and we persist it next to
@@ -109,7 +149,7 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
     credsPath,
     workspaceId: enrolled.workspaceId,
     orgId: enrolled.orgId,
-    chatName: enrolled.name,
+    chatName,
     ...(enrolled.expiresAt !== undefined ? { expiresAt: enrolled.expiresAt } : {}),
     ...(enrolled.apiKey !== undefined ? { apiKey: enrolled.apiKey } : {}),
   });
@@ -118,7 +158,7 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
     did: identity.did,
     orgId: enrolled.orgId,
     workspaceId: enrolled.workspaceId,
-    chatName: enrolled.name,
+    chatName,
     broker: enrolled.natsUrl,
     ...(enrolled.expiresAt !== undefined ? { expiresAt: enrolled.expiresAt } : {}),
     apiKeyMinted: enrolled.apiKey !== undefined,
