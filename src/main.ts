@@ -831,9 +831,10 @@ function buildProgram(): Command {
     .command('normalize')
     .description(
       'Normalize comms-v3.env UNBLOCK_CHAT_NAME to the canonical lowercase wire name. ' +
-        'Dry-run by default; pass --apply to rewrite the env file in place.',
+        'Dry-run by default; pass --apply to rewrite the env file in place. ' +
+        'Persona dir is resolved per the standard chain (--persona flag > UNBLOCK_HOME env > default ~/.unblock/).',
     )
-    .requiredOption('--persona <name>', 'use ~/.unblock-personas/<name>/comms-v3.env')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/comms-v3.env (overrides UNBLOCK_HOME)')
     .option('--apply', 'rewrite comms-v3.env in place', false)
     .option('--json', 'emit structured JSON', false)
     .action(async (opts: Record<string, unknown>) => {

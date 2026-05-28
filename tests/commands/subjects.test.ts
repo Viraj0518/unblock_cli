@@ -52,6 +52,31 @@ describe('runSubjects', () => {
     });
   });
 
+  it('regression #145/K22: canonical_chat_name uses env.UNBLOCK_CHAT_NAME, not JWT name (DID per ADR-147)', async () => {
+    // Post-ADR-147 the JWT `name` claim carries the agent DID, not the
+    // chat name. env.UNBLOCK_CHAT_NAME is the canonical lowercase wire
+    // name written by `unblock login`. Subjects must report what
+    // `unblock listen` actually subscribes to.
+    await seedCurrentPersona({
+      workspaceId: 'ws-did',
+      chatName: 'viraj-tester',
+      jwtPayload: {
+        name: 'did:key:z6MkpdEXAMPLEzZTcc',
+        nats: {
+          pub: { allow: ['unblock.chat.ws.ws-did.firehose'] },
+          sub: { allow: ['unblock.chat.ws.ws-did.to.viraj-tester'] },
+        },
+      },
+    });
+
+    const result = await runSubjects();
+
+    expect(result.canonical_chat_name).toBe('viraj-tester');
+    expect(result.canonical_chat_name).not.toMatch(/^did:/);
+    expect(result.dm_inbox_subject).toBe('unblock.chat.ws.ws-did.to.viraj-tester');
+    expect(result.dm_inbox_subject).not.toContain('did:key');
+  });
+
   it('extracts nats.pub.allow and nats.sub.allow from the User JWT payload', async () => {
     await seedCurrentPersona({
       workspaceId: 'ws-jwt',
