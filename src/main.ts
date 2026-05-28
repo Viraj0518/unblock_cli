@@ -37,6 +37,7 @@ import { runSend } from './commands/send.js';
 import { runTrace } from './commands/trace.js';
 import { runHealth, type ComponentName } from './commands/health.js';
 import { formatSubjects, runSubjects } from './commands/subjects.js';
+import { formatIdentityNormalize, runIdentityNormalize } from './commands/identity-normalize.js';
 import {
   cmdProfileAdd,
   cmdProfileList,
@@ -810,6 +811,37 @@ function buildProgram(): Command {
             process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
           } else {
             process.stdout.write(formatSubjects(result));
+          }
+        });
+      } catch (err) {
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  const identity = program.command('identity').description('Manage local persona identity files.');
+
+  identity
+    .command('normalize')
+    .description(
+      'Normalize comms-v3.env UNBLOCK_CHAT_NAME to the canonical lowercase wire name. ' +
+        'Dry-run by default; pass --apply to rewrite the env file in place.',
+    )
+    .requiredOption('--persona <name>', 'use ~/.unblock-personas/<name>/comms-v3.env')
+    .option('--apply', 'rewrite comms-v3.env in place', false)
+    .option('--json', 'emit structured JSON', false)
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        const persona = typeof opts['persona'] === 'string' ? opts['persona'] : '';
+        await withPersonaFlag(persona, async () => {
+          const result = await runIdentityNormalize({
+            persona,
+            apply: opts['apply'] === true,
+          });
+          if (opts['json'] === true) {
+            process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+          } else {
+            process.stdout.write(formatIdentityNormalize(result, { applied: opts['apply'] === true }));
           }
         });
       } catch (err) {
