@@ -59,6 +59,9 @@ import { personaHomeFor, setPersonaDirOverride } from './auth/persona-store.js';
 import { loadRegistry, readProfileKey } from './profile/registry.js';
 import { version } from './index.js';
 
+const VALID_HEALTH_COMPONENT_SELECTIONS = ['auth', 'broker', 'substrate', 'audit', 'all'] as const;
+let activePersonaNameOverride: string | null = null;
+
 /**
  * Entry point. Returns the desired exit code (caller calls process.exit).
  * Errors are converted to non-zero exit codes + stderr messages.
@@ -84,13 +87,21 @@ export function buildProgram(): Command {
     .description(
       'UNBLOCK CLI — comms (chat/say/dm/ask), substrate (remember/query/share/list/purchase/verify/attest/subscribe/update/extract/forget), auth (login/whoami/logout/invite/mint).\n' +
         '\n' +
-        'Multi-persona on one workstation: every auth/persona command accepts ' +
-        '`--persona NAME` (preferred) to read/write `~/.unblock-personas/<NAME>/` ' +
+        'Multi-persona on one workstation: global `--persona NAME` reads/writes ' +
+        '`~/.unblock-personas/<NAME>/` ' +
         'instead of `~/.unblock/`. You can also export `UNBLOCK_HOME=<dir>` to ' +
         'pin a persona for the whole shell session.',
     )
     .version(version, '-V, --version')
+    .option('--persona <name>', 'persona dir override (overrides UNBLOCK_HOME)')
     .exitOverride()
+    .hook('preAction', (thisCommand, actionCommand) => {
+      applyPersonaOverride(actionCommand.opts()['persona'], thisCommand.opts()['persona']);
+    })
+    .hook('postAction', () => {
+      activePersonaNameOverride = null;
+      setPersonaDirOverride(null);
+    })
     .action(() => {
       program.outputHelp();
       process.exitCode = 0;
@@ -774,10 +785,11 @@ export function buildProgram(): Command {
     .description(
       'Synthetic health check: auth | broker | substrate | audit | all. ' +
         'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
-        'Exit 0 if all ok, 1 if any degraded/down.',
+        'Exit 0 if overall_status is ok/degraded, 1 if down. Use --strict to exit 1 on degraded.',
     )
     .option('--component <name>', 'auth | broker | substrate | audit | all (default: all)')
     .option('--json', 'emit structured JSON', false)
+    .option('--strict', 'exit 1 on degraded as well as down', false)
     .option('--supabase-url <url>', 'Supabase project URL override')
     .option('--supabase-service-role-key <key>', 'Supabase service-role key')
     .option('--auth-url <url>', 'auth-issuer URL override')
@@ -787,11 +799,14 @@ export function buildProgram(): Command {
       try {
         await withPersonaFlag(opts['persona'], async () => {
           const rawComponent = opts['component'];
-          const validComponents = ['auth', 'broker', 'substrate', 'audit', 'all'] as const;
-          const component: ComponentName | 'all' =
-            typeof rawComponent === 'string' && validComponents.includes(rawComponent as ComponentName | 'all')
-              ? (rawComponent as ComponentName | 'all')
-              : 'all';
+          const component = parseHealthComponent(rawComponent);
+          if (component === null) {
+            process.stderr.write(
+              `error: --component must be one of auth | broker | substrate | audit | all (got "${String(rawComponent)}")\n`,
+            );
+            process.exitCode = 1;
+            return;
+          }
 
           const result = await runHealth(
             { commsFactory: createNatsFactory() },
@@ -799,6 +814,7 @@ export function buildProgram(): Command {
               ...configOverrides(opts),
               component,
               json: opts['json'] === true,
+              strict: opts['strict'] === true,
               ...(typeof opts['supabaseUrl'] === 'string' ? { supabaseUrl: opts['supabaseUrl'] } : {}),
               ...(typeof opts['supabaseServiceRoleKey'] === 'string'
                 ? { supabaseServiceRoleKey: opts['supabaseServiceRoleKey'] }
@@ -808,21 +824,23 @@ export function buildProgram(): Command {
 
           if (opts['json'] === true) {
             process.stdout.write(`${JSON.stringify({
+              overall_status: result.overallStatus,
               components: result.components,
               subjects: result.subjects,
             }, null, 2)}\n`);
           } else {
-            process.stdout.write(`${'component'.padEnd(12)}${'status'.padEnd(12)}${'latency_ms'.padEnd(14)}last_error\n`);
+            process.stdout.write(`overall_status: ${result.overallStatus}\n`);
+            process.stdout.write(`${'component'.padEnd(12)}${'status'.padEnd(12)}${'latency_ms'.padEnd(14)}${'reason'.padEnd(18)}last_error\n`);
             process.stdout.write(`${'─'.repeat(70)}\n`);
             for (const c of result.components) {
               const status = c.status === 'ok' ? 'ok' : c.status;
               process.stdout.write(
-                `${c.component.padEnd(12)}${status.padEnd(12)}${String(c.latencyMs).padEnd(14)}${c.lastError ?? ''}\n`,
+                `${c.component.padEnd(12)}${status.padEnd(12)}${String(c.latencyMs).padEnd(14)}${c.reason.padEnd(18)}${c.lastError ?? ''}\n`,
               );
             }
           }
 
-          process.exitCode = result.allOk ? 0 : 1;
+          process.exitCode = result.shouldExitNonZero ? 1 : 0;
         });
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
@@ -868,7 +886,7 @@ export function buildProgram(): Command {
     .option('--json', 'emit structured JSON', false)
     .action(async (opts: Record<string, unknown>) => {
       try {
-        const persona = typeof opts['persona'] === 'string' ? opts['persona'] : '';
+        const persona = personaNameFromOption(opts['persona']);
         await withPersonaFlag(persona, async () => {
           const result = await runIdentityNormalize({
             persona,
@@ -903,7 +921,7 @@ export function buildProgram(): Command {
     .option('--supabase-service-role-key <key>', 'service-role key override')
     .action(async (opts: Record<string, unknown>) => {
       try {
-        const persona = typeof opts['persona'] === 'string' ? opts['persona'] : '';
+        const persona = personaNameFromOption(opts['persona']);
         await withPersonaFlag(persona, async () => {
           const result = await runMintApiKey(
             {},
@@ -1417,6 +1435,31 @@ async function withPersonaFlag(
   } finally {
     setPersonaDirOverride(null);
   }
+}
+
+function applyPersonaOverride(rawLocalPersona: unknown, rawGlobalPersona: unknown): void {
+  const rawPersona = typeof rawLocalPersona === 'string' && rawLocalPersona.trim() !== ''
+    ? rawLocalPersona
+    : rawGlobalPersona;
+  if (typeof rawPersona !== 'string' || rawPersona.trim() === '') {
+    activePersonaNameOverride = null;
+    return;
+  }
+  activePersonaNameOverride = rawPersona.trim();
+  setPersonaDirOverride(personaHomeFor(activePersonaNameOverride));
+}
+
+function personaNameFromOption(rawPersona: unknown): string {
+  if (typeof rawPersona === 'string' && rawPersona.trim() !== '') return rawPersona.trim();
+  return activePersonaNameOverride ?? '';
+}
+
+function parseHealthComponent(rawComponent: unknown): ComponentName | 'all' | null {
+  if (rawComponent === undefined) return 'all';
+  if (typeof rawComponent !== 'string') return null;
+  return VALID_HEALTH_COMPONENT_SELECTIONS.includes(rawComponent as ComponentName | 'all')
+    ? (rawComponent as ComponentName | 'all')
+    : null;
 }
 
 function configOverrides(opts: Record<string, unknown>): Record<string, string> {
