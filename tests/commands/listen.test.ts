@@ -25,6 +25,24 @@ afterEach(async () => {
   await tmp.dispose();
 });
 
+/**
+ * Poll the mock subscribers map until `subject` has at least one registered
+ * subscriber, with a 1s deadline. Replaces brittle `await setTimeout(10)`
+ * waits that flake under full-suite load (the connect() promise sometimes
+ * doesn't resolve in 10ms when 36 test files run in parallel).
+ */
+async function waitForSubscriber(
+  state: { subscribers: Map<string, Set<unknown>> },
+  subject: string,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((state.subscribers.get(subject)?.size ?? 0) > 0) return;
+    await new Promise<void>((r) => setTimeout(r, 5));
+  }
+}
+
 // ─── happy path: receives messages and exits on abort ─────────────────────────
 
 describe('runListen happy path', () => {
@@ -41,7 +59,7 @@ describe('runListen happy path', () => {
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
     const payload = JSON.stringify({ kind: 'dm', source: 'other-agent', msg: 'hello' });
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await waitForSubscriber(state, subject);
 
     const subs = state.subscribers.get(subject);
     if (subs) {
@@ -118,10 +136,10 @@ describe('runListen --filter', () => {
       { filter: 'MATCH_ME', json: true },
     );
 
-    // Wait for subscription to be established
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
+
+    // Wait for subscription to be established
+    await waitForSubscriber(state, subject);
 
     const deliver = (payload: string): void => {
       const subs = state.subscribers.get(subject);
@@ -181,8 +199,10 @@ describe('runListen defensive subscribe (legacy mixed-case chat_name)', () => {
       { json: true },
     );
 
-    // Allow subscription registration.
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    // Allow subscription registration (poll, not fixed sleep, to avoid
+    // full-suite-load flake — see waitForSubscriber doc).
+    await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
+    await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.Viraj-Alpha');
 
     expect(state.subscribers.has('unblock.chat.ws.ws-default.to.Viraj-Alpha')).toBe(true);
     expect(state.subscribers.has('unblock.chat.ws.ws-default.to.viraj-alpha')).toBe(true);
@@ -209,7 +229,7 @@ describe('runListen defensive subscribe (legacy mixed-case chat_name)', () => {
       { json: true },
     );
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
 
     expect(state.subscribers.has('unblock.chat.ws.ws-default.to.viraj-alpha')).toBe(true);
     // No mixed-case variant possible to subscribe to, and no double-subscribe
@@ -238,9 +258,9 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
       { json: true },
     );
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
+    await waitForSubscriber(state, subject);
+
     const inboxSubject = '_INBOX.abc123';
     const messageId = 'msg-xyz';
     const payload = JSON.stringify({
@@ -288,9 +308,9 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
       { json: true, noAck: true },
     );
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
+    await waitForSubscriber(state, subject);
+
     const inboxSubject = '_INBOX.def456';
     const subs = state.subscribers.get(subject);
     if (subs) {
@@ -322,9 +342,9 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
       { json: true },
     );
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
+    await waitForSubscriber(state, subject);
+
     const inboxSubject = '_INBOX.via-envelope';
     const payload = JSON.stringify({
       kind: 'dm',
@@ -363,9 +383,9 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
       { json: true },
     );
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
+    await waitForSubscriber(state, subject);
+
     const subs = state.subscribers.get(subject);
     if (subs) {
       const frame = {
@@ -401,7 +421,10 @@ describe('runListen --since', () => {
     expect(state.jsConsumeCalls.length).toBe(1);
     const call = state.jsConsumeCalls[0]!;
     expect(call.stream).toBe('UNBLOCK_CHAT');
-    expect(call.filterSubject).toBe('unblock.chat.ws.ws-default.to.Viraj-Alpha');
+    // Legacy chat_name in env is `Viraj-Alpha` (mixed-case). The fix lowercases
+    // it so the JS filter_subject matches what current senders publish to
+    // (see 2026-05-28 Bug 2 root cause in src/commands/listen.ts comments).
+    expect(call.filterSubject).toBe('unblock.chat.ws.ws-default.to.viraj-alpha');
     expect(call.deliverPolicy.kind).toBe('by_start_time');
     if (call.deliverPolicy.kind === 'by_start_time') {
       // Should be roughly an hour ago — ISO-8601 parseable.
@@ -437,7 +460,9 @@ describe('runListen --since', () => {
     const { factory, state } = createMockCommsFactory();
     const ctrl = new AbortController();
 
-    const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
+    // Subject is lowercase to match what `resolveSubject` builds for the JS
+    // filter_subject (post 2026-05-28 normalization fix).
+    const subject = 'unblock.chat.ws.ws-default.to.viraj-alpha';
     const f1 = makeJsFrame(subject, { kind: 'dm', message_id: 'r1', msg: 'replay-1' });
     const f2 = makeJsFrame(subject, { kind: 'dm', message_id: 'r2', msg: 'replay-2' });
     state.jsFramesBySubject.set(subject, [f1.frame, f2.frame]);
@@ -450,6 +475,67 @@ describe('runListen --since', () => {
     expect(result.received).toBe(2);
     expect(f1.state.acked).toBe(1);
     expect(f2.state.acked).toBe(1);
+  });
+});
+
+// ─── Bug 1 + Bug 2 regression: --since X --timeout N exits 0 cleanly ─────────
+//
+// Live repro 2026-05-28 02:50 UTC: `unblock listen --since 30m --timeout 15`
+// emitted 0 events and then crashed on cleanup with TypeError on
+// `messages?.stop().catch(...)` — verified TWO bugs in one symptom:
+//   - Bug 1: abort handler crashes (regression test in nats-client.test.ts)
+//   - Bug 2: filter_subject was mixed-case while published subjects are
+//     lowercased, so JS retention returned nothing
+//
+// This test exercises both fixes together against the listen surface:
+//   1. JS consumer opens with the LOWERCASE filter_subject (Bug 2 fix)
+//   2. No matching frames in the mock → 0 events
+//   3. Timeout fires → listener exits with exitReason='timeout', received=0
+//   4. No exception thrown during cleanup (Bug 1 fix)
+describe('runListen --since with no matching messages (Bug 1+2 regression)', () => {
+  it('exits cleanly with exitReason=timeout and received=0 when no frames match', async () => {
+    const { factory, state } = createMockCommsFactory();
+
+    // No frames pre-seeded for ANY subject — JS consume yields nothing,
+    // then the --timeout cleanup must run without throwing.
+    const result = await runListen(
+      { commsFactory: factory },
+      { since: '30m', json: true, timeout: 0.05 },
+    );
+
+    expect(result.exitReason).toBe('timeout');
+    expect(result.received).toBe(0);
+
+    // The JS consumer should have been opened with the LOWERCASE filter
+    // subject — even though env chat_name is mixed-case `Viraj-Alpha`.
+    // This is the Bug 2 fix: pre-fix, filter was mixed-case and missed
+    // every retained message because senders publish to lowercase.
+    expect(state.jsConsumeCalls.length).toBe(1);
+    expect(state.jsConsumeCalls[0]!.filterSubject).toBe(
+      'unblock.chat.ws.ws-default.to.viraj-alpha',
+    );
+  });
+
+  it('survives abort during JS setup race (no TypeError on stop())', async () => {
+    // Mirror the production race: caller aborts BEFORE the JS consume
+    // resolves. The mock's consume() is synchronous (resolves immediately),
+    // but the abort-before-yield path still exercises iterator.return()
+    // which used to crash with the optional-chain bug.
+    const { factory } = createMockCommsFactory();
+    const ctrl = new AbortController();
+    ctrl.abort(); // abort BEFORE runListen even starts
+
+    const result = await runListen(
+      { commsFactory: factory, signal: ctrl.signal },
+      { since: '5m', json: true, timeout: 0.05 },
+    );
+
+    // Aborted before any work → exit cleanly. The pre-fix code path here
+    // hit `messages?.stop().catch(...)` → TypeError on the abort listener.
+    expect(result.received).toBe(0);
+    // Either aborted (signal raced ahead) or timeout (signal fired before
+    // setup wired the abort listener) is acceptable — both prove no crash.
+    expect(['aborted', 'timeout']).toContain(result.exitReason);
   });
 });
 
@@ -510,7 +596,7 @@ describe('runListen bare (no replay flag)', () => {
       { json: true },
     );
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
 
     expect(state.jsConsumeCalls.length).toBe(0);
     expect(state.subscribers.size).toBeGreaterThan(0);
@@ -548,5 +634,74 @@ describe('runListen JetStream unavailability', () => {
 describe('ListenFilterError exists', () => {
   it('is exported', () => {
     expect(ListenFilterError).toBeDefined();
+  });
+});
+
+// ─── Bug 2 (P1, 2026-05-28): listen subject must match what senders publish ──
+//
+// Senders (send/dm/ask via `chatDmSubject`) lowercase the recipient through
+// `normalizeChatName()`. Pre-fix, `runListen` did NOT — so a legacy persona
+// with `UNBLOCK_CHAT_NAME=Viraj-Alpha` in `comms-v3.env` subscribed to a
+// different subject than current senders publish to. JS consumer's
+// `filter_subject` carried the mismatch into the 30-day retention window:
+// 0 retained messages matched even when messages were definitely there.
+describe('runListen subject normalization (Bug 2: mixed-case persona)', () => {
+  it('JS filter_subject is lowercased even when chat_name env is mixed-case', async () => {
+    // beforeEach seeded chatName='Viraj-Alpha' (mixed-case).
+    const { factory, state } = createMockCommsFactory();
+
+    await runListen(
+      { commsFactory: factory },
+      { replayAll: true, timeout: 0.05 },
+    );
+
+    expect(state.jsConsumeCalls.length).toBe(1);
+    expect(state.jsConsumeCalls[0]!.filterSubject).toBe(
+      'unblock.chat.ws.ws-default.to.viraj-alpha',
+    );
+  });
+
+  it('raw subscribe primary subject is lowercased; aux subscribes to mixed-case for legacy senders', async () => {
+    // beforeEach seeded chatName='Viraj-Alpha' (mixed-case).
+    const { factory, state } = createMockCommsFactory();
+    const ctrl = new AbortController();
+
+    const listenPromise = runListen(
+      { commsFactory: factory, signal: ctrl.signal },
+      { json: true },
+    );
+
+    await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
+    await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.Viraj-Alpha');
+
+    // Primary = lowercase (matches what current senders publish to via
+    // `chatDmSubject` in send/dm/ask).
+    expect(state.subscribers.has('unblock.chat.ws.ws-default.to.viraj-alpha')).toBe(true);
+    // Aux = mixed-case (safety net for legacy senders that haven't been
+    // updated to lowercase recipients).
+    expect(state.subscribers.has('unblock.chat.ws.ws-default.to.Viraj-Alpha')).toBe(true);
+
+    ctrl.abort();
+    await listenPromise;
+  });
+
+  it('--subject override is passed through verbatim (no normalization)', async () => {
+    // Explicit --subject must NOT be touched — operators may target a
+    // mixed-case subject deliberately (e.g. for debugging a stuck legacy
+    // sender). Only the default-subject derivation gets normalized.
+    const { factory, state } = createMockCommsFactory();
+    const ctrl = new AbortController();
+
+    const listenPromise = runListen(
+      { commsFactory: factory, signal: ctrl.signal },
+      { subject: 'custom.Subject.With.MixedCase' },
+    );
+
+    await waitForSubscriber(state, 'custom.Subject.With.MixedCase');
+
+    expect(state.subscribers.has('custom.Subject.With.MixedCase')).toBe(true);
+
+    ctrl.abort();
+    await listenPromise;
   });
 });
