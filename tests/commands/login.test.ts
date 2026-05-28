@@ -123,6 +123,91 @@ describe('runLogin', () => {
     expect(envContent).not.toContain('UNBLOCK_API_KEY=');
   });
 
+  it('renames stale chat_name on re-login when --agent-name differs (issue #14 · 2026-05-28)', async () => {
+    // Repro: a persona that was first enrolled with a random short-DID handle
+    // (e.g. `xkqzhitg`) re-logs in with `--agent-name viraj-beta`. The CLI
+    // updates identity.json.agentName but, because the server is NOT
+    // re-enrolled with a new handle, comms-v3.env keeps the stale chat_name
+    // and inbound DMs to `viraj-beta` silently drop.
+    //
+    // Fix (matches `canonicalChatName()` in auth-issuer PR #328): when
+    // --agent-name is passed AND differs from the stored handle, the CLI
+    // lowercases it client-side and writes it as UNBLOCK_CHAT_NAME directly.
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = {
+      natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      workspaceId: 'ws',
+      orgId: 'org',
+      // Server returns the stale random handle on re-enroll (it sees the
+      // same DID and reuses the row) — this is what produced the bug.
+      name: 'xkqzhitg',
+    };
+    // First login mints a fresh identity; let it pick up the random handle.
+    const first = await runLogin({ substrateFactory: factory }, { inviteCode: 'INV-1' });
+    expect(first.chatName).toBe('xkqzhitg');
+    {
+      const envContent = await readFile(v3EnvPath(), 'utf-8');
+      expect(envContent).toContain('UNBLOCK_CHAT_NAME=xkqzhitg');
+    }
+
+    // Re-login with --agent-name. Server STILL returns the stale name.
+    const second = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-2', agentName: 'Viraj-Beta' },
+    );
+    expect(second.mintedNewIdentity).toBe(false);
+    // The result + env file MUST reflect the new, lowercased chat name.
+    expect(second.chatName).toBe('viraj-beta');
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain('UNBLOCK_CHAT_NAME=viraj-beta');
+    expect(envContent).not.toContain('UNBLOCK_CHAT_NAME=xkqzhitg');
+    // identity.json keeps the human-readable (non-lowercased) handle.
+    const id = await readIdentity();
+    expect(id?.agentName).toBe('Viraj-Beta');
+  });
+
+  it('does NOT override chat_name when --agent-name equals stored handle (no-op)', async () => {
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = {
+      natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      workspaceId: 'ws',
+      orgId: 'org',
+      name: 'viraj-beta',
+    };
+    await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-1', agentName: 'Viraj-Beta' },
+    );
+    const second = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-2', agentName: 'Viraj-Beta' },
+    );
+    // Server returned 'viraj-beta'; agent-name normalizes to 'viraj-beta';
+    // no override needed, env carries server value.
+    expect(second.chatName).toBe('viraj-beta');
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain('UNBLOCK_CHAT_NAME=viraj-beta');
+  });
+
+  it('does NOT override chat_name when --agent-name is omitted on re-login', async () => {
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = {
+      natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      workspaceId: 'ws',
+      orgId: 'org',
+      name: 'xkqzhitg',
+    };
+    await runLogin({ substrateFactory: factory }, { inviteCode: 'INV-1' });
+    const second = await runLogin({ substrateFactory: factory }, { inviteCode: 'INV-2' });
+    // Standard reconnect: env keeps server-supplied chat_name unchanged.
+    expect(second.chatName).toBe('xkqzhitg');
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain('UNBLOCK_CHAT_NAME=xkqzhitg');
+  });
+
   it('runLogout removes identity + comms files (idempotent)', async () => {
     const { factory, state } = createMockSubstrateFactory();
     state.enrollResponse = {
