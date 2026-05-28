@@ -40,6 +40,12 @@ import { formatSubjects, runSubjects } from './commands/subjects.js';
 import { registerSkillCommands } from './commands/skill.js';
 import { formatIdentityNormalize, runIdentityNormalize } from './commands/identity-normalize.js';
 import {
+  AlreadyPresentError,
+  formatMintApiKey,
+  MINT_API_KEY_EXIT,
+  runMintApiKey,
+} from './commands/identity-mint-api-key.js';
+import {
   cmdProfileAdd,
   cmdProfileList,
   cmdProfileRm,
@@ -855,6 +861,64 @@ function buildProgram(): Command {
       } catch (err) {
         process.stderr.write(`${errMsg(err)}\n`);
         process.exitCode = 1;
+      }
+    });
+
+  identity
+    .command('mint-api-key')
+    .description(
+      'Backfill a substrate API key for a pre-W1e persona that has NATS creds ' +
+        'but no UNBLOCK_API_KEY in comms-v3.env (kink #136). Mints `unb_<64hex>`, ' +
+        'writes the api_keys + members rows via Supabase REST (idempotent ' +
+        'ON CONFLICT), and rewrites comms-v3.env in place preserving other lines. ' +
+        'Falls back to printing SQL to stdout when SUPABASE_SERVICE_ROLE_KEY is ' +
+        'unavailable. Exit 0=minted (or SQL printed), 1=error, 2=already present (without --force).',
+    )
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ (overrides UNBLOCK_HOME)')
+    .option('--force', 'overwrite an existing UNBLOCK_API_KEY (does not revoke the old key server-side)', false)
+    .option('--json', 'emit structured JSON', false)
+    .option('--supabase-url <url>', 'Supabase project URL override')
+    .option('--supabase-service-role-key <key>', 'service-role key override')
+    .action(async (opts: Record<string, unknown>) => {
+      try {
+        const persona = typeof opts['persona'] === 'string' ? opts['persona'] : '';
+        await withPersonaFlag(persona, async () => {
+          const result = await runMintApiKey(
+            {},
+            {
+              persona,
+              force: opts['force'] === true,
+              json: opts['json'] === true,
+              ...(typeof opts['supabaseUrl'] === 'string' ? { supabaseUrl: opts['supabaseUrl'] } : {}),
+              ...(typeof opts['supabaseServiceRoleKey'] === 'string'
+                ? { supabaseServiceRoleKey: opts['supabaseServiceRoleKey'] }
+                : {}),
+            },
+          );
+          if (opts['json'] === true) {
+            process.stdout.write(`${JSON.stringify({
+              persona: result.persona,
+              did: result.did,
+              org_did: result.orgDid,
+              api_key_id: result.apiKeyId,
+              env_path: result.envPath,
+              action: result.action,
+              ...(result.sql !== undefined ? { sql: result.sql } : {}),
+              ...(result.apiKey !== undefined ? { api_key: result.apiKey } : {}),
+            }, null, 2)}\n`);
+          } else {
+            process.stdout.write(formatMintApiKey(result));
+          }
+          process.exitCode = MINT_API_KEY_EXIT.ok;
+        });
+      } catch (err) {
+        if (err instanceof AlreadyPresentError) {
+          process.stderr.write(`${err.message}\n`);
+          process.exitCode = MINT_API_KEY_EXIT.already_present;
+          return;
+        }
+        process.stderr.write(`${errMsg(err)}\n`);
+        process.exitCode = MINT_API_KEY_EXIT.error;
       }
     });
 
