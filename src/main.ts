@@ -8,7 +8,7 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import process from 'node:process';
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { runSay } from './commands/say.js';
 import { runDm } from './commands/dm.js';
 import { runAsk } from './commands/ask.js';
@@ -69,6 +69,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     await program.parseAsync(['node', 'unblock', ...argv]);
     return toExitNumber(process.exitCode) ?? 0;
   } catch (err) {
+    if (err instanceof CommanderError) {
+      return toExitNumber(err.exitCode) ?? 1;
+    }
     process.stderr.write(`${errMsg(err)}\n`);
     return toExitNumber(process.exitCode) ?? 1;
   }
@@ -86,7 +89,12 @@ function buildProgram(): Command {
         'instead of `~/.unblock/`. You can also export `UNBLOCK_HOME=<dir>` to ' +
         'pin a persona for the whole shell session.',
     )
-    .version(version, '-V, --version');
+    .version(version, '-V, --version')
+    .exitOverride()
+    .action(() => {
+      program.outputHelp();
+      process.exitCode = 0;
+    });
 
   // ─── comms ────────────────────────────────────────────────────────────────
   program
@@ -627,11 +635,25 @@ function buildProgram(): Command {
       'Print current persona: DID, handle, broker, workspace, JWT expiry. ' +
         'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
     )
+    .option('--json', 'machine-readable JSON output', false)
     .option('--persona <name>', 'read ~/.unblock-personas/<name>/ instead of ~/.unblock/')
     .action(async (opts: Record<string, unknown>) => {
       await withPersonaFlag(opts['persona'], async () => {
         const result = await runWhoami();
-        for (const line of result.lines) process.stdout.write(`${line}\n`);
+        if (opts['json'] === true) {
+          process.stdout.write(`${JSON.stringify({
+            did: result.did ?? null,
+            handle: result.agentName ?? null,
+            chat_name: result.chatName ?? null,
+            broker: result.broker ?? null,
+            workspace: result.workspaceId ?? null,
+            org: result.orgId ?? null,
+            jwt_expiry: result.jwtExpiresAt ?? null,
+            jwt_expires_in_seconds: result.jwtExpiresInSeconds ?? null,
+          }, null, 2)}\n`);
+        } else {
+          for (const line of result.lines) process.stdout.write(`${line}\n`);
+        }
         process.exitCode = result.loggedIn ? 0 : 1;
       });
     });
