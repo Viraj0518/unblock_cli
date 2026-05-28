@@ -1,5 +1,5 @@
 /**
- * `unblock health [--component all|auth|broker|substrate|audit] [--json]`
+ * `unblock health [--component all|auth|broker|substrate|audit] [--json] [--strict]`
  *
  * Synthetic health check across UNBLOCK service components.
  *
@@ -11,11 +11,12 @@
  *               via Supabase REST → count >= 0 and no error
  *   all       — run all 4 in parallel (default)
  *
- * Output table: component | status | latency_ms | last_error
- * --json: structured array.
+ * Output table: component | status | latency_ms | reason | last_error
+ * --json: structured object with overall_status, components, and subjects.
  *
- * Exit 0 if all checked components are "ok".
- * Exit 1 if any is "degraded" or "down".
+ * Exit 0 if the overall status is "ok" or "degraded".
+ * Exit 1 if the overall status is "down".
+ * --strict restores legacy behavior: exit 1 on "degraded" or "down".
  *
  * Endpoints consumed:
  *   GET  https://auth.kaeva.app/health
@@ -31,10 +32,16 @@ import { buildSubjectSummary, type SubjectSummary } from './subjects.js';
 
 export type ComponentName = 'auth' | 'broker' | 'substrate' | 'audit';
 export type HealthStatus = 'ok' | 'degraded' | 'down';
+export type HealthReason =
+  | 'ok'
+  | 'not-configured'
+  | 'http-error'
+  | 'connection-error';
 
 export interface ComponentHealth {
   readonly component: ComponentName;
   readonly status: HealthStatus;
+  readonly reason: HealthReason;
   readonly latencyMs: number;
   readonly lastError: string | undefined;
 }
@@ -52,12 +59,16 @@ export interface HealthOptions extends ConfigOverrides {
   readonly supabaseUrl?: string;
   /** Emit JSON. */
   readonly json?: boolean;
+  /** Exit non-zero on degraded checks as well as down checks. */
+  readonly strict?: boolean;
 }
 
 export interface HealthResult {
   readonly components: readonly ComponentHealth[];
   readonly subjects: SubjectSummary;
+  readonly overallStatus: HealthStatus;
   readonly allOk: boolean;
+  readonly shouldExitNonZero: boolean;
 }
 
 export async function runHealth(deps: HealthDeps, opts: HealthOptions): Promise<HealthResult> {
@@ -76,15 +87,23 @@ export async function runHealth(deps: HealthDeps, opts: HealthOptions): Promise<
     checks.map((c) => runCheck(c, deps, opts, cfg, fetch, getNow)),
   );
 
-  const allOk = results.every((r) => r.status === 'ok');
+  const overallStatus = computeOverallStatus(results);
   return {
     components: results,
     subjects: buildSubjectSummary({
       workspaceId: cfg.workspaceId,
       chatName: cfg.chatName ?? 'me',
     }),
-    allOk,
+    overallStatus,
+    allOk: overallStatus === 'ok',
+    shouldExitNonZero: overallStatus === 'down' || (opts.strict === true && overallStatus === 'degraded'),
   };
+}
+
+function computeOverallStatus(results: readonly ComponentHealth[]): HealthStatus {
+  if (results.some((r) => r.status === 'down')) return 'down';
+  if (results.some((r) => r.status === 'degraded')) return 'degraded';
+  return 'ok';
 }
 
 // ─── individual checks ────────────────────────────────────────────────────────
@@ -123,6 +142,7 @@ async function runCheck(
     return {
       component,
       status: 'down',
+      reason: 'connection-error',
       latencyMs: getNow() - t0,
       lastError: err instanceof Error ? err.message : String(err),
     };
@@ -141,10 +161,13 @@ async function checkAuth(
       signal: AbortSignal.timeout(8000),
     });
     const latencyMs = getNow() - t0;
-    if (res.ok) return { component: 'auth', status: 'ok', latencyMs, lastError: undefined };
+    if (res.ok) {
+      return { component: 'auth', status: 'ok', reason: 'ok', latencyMs, lastError: undefined };
+    }
     return {
       component: 'auth',
-      status: 'degraded',
+      status: 'down',
+      reason: 'http-error',
       latencyMs,
       lastError: `HTTP ${res.status}`,
     };
@@ -152,6 +175,7 @@ async function checkAuth(
     return {
       component: 'auth',
       status: 'down',
+      reason: 'connection-error',
       latencyMs: getNow() - t0,
       lastError: err instanceof Error ? err.message : String(err),
     };
@@ -172,11 +196,12 @@ async function checkBroker(
     await client.flush();
     await client.close();
     const latencyMs = getNow() - t0;
-    return { component: 'broker', status: 'ok', latencyMs, lastError: undefined };
+    return { component: 'broker', status: 'ok', reason: 'ok', latencyMs, lastError: undefined };
   } catch (err) {
     return {
       component: 'broker',
       status: 'down',
+      reason: 'connection-error',
       latencyMs: getNow() - t0,
       lastError: err instanceof Error ? err.message : String(err),
     };
@@ -205,13 +230,13 @@ async function checkSubstrate(
     });
     const latencyMs = getNow() - t0;
     if (res.ok) {
-      return { component: 'substrate', status: 'ok', latencyMs, lastError: undefined };
+      return { component: 'substrate', status: 'ok', reason: 'ok', latencyMs, lastError: undefined };
     }
-    // 401 = reachable but not authed — degraded not down
-    const status: HealthStatus = res.status === 401 ? 'degraded' : 'down';
+    // Any HTTP 4xx/5xx from the substrate is a hard health failure.
     return {
       component: 'substrate',
-      status,
+      status: 'down',
+      reason: 'http-error',
       latencyMs,
       lastError: `HTTP ${res.status}`,
     };
@@ -219,6 +244,7 @@ async function checkSubstrate(
     return {
       component: 'substrate',
       status: 'down',
+      reason: 'connection-error',
       latencyMs: getNow() - t0,
       lastError: err instanceof Error ? err.message : String(err),
     };
@@ -240,8 +266,9 @@ async function checkAudit(
     return {
       component: 'audit',
       status: 'degraded',
+      reason: 'not-configured',
       latencyMs: getNow() - t0,
-      lastError: 'SUPABASE_SERVICE_ROLE_KEY not set — audit check skipped',
+      lastError: 'SUPABASE_SERVICE_ROLE_KEY not set; audit check skipped',
     };
   }
 
@@ -270,29 +297,23 @@ async function checkAudit(
     const latencyMs = getNow() - t0;
 
     // 404 just means the table doesn't exist yet — degrade not down
-    if (res.status === 404) {
-      return {
-        component: 'audit',
-        status: 'degraded',
-        latencyMs,
-        lastError: 'audit_events table not found (may not be migrated)',
-      };
-    }
     if (!res.ok) {
       return {
         component: 'audit',
-        status: 'degraded',
+        status: 'down',
+        reason: 'http-error',
         latencyMs,
         lastError: `HTTP ${res.status}`,
       };
     }
 
     // 0 rows is still ok (no recent events != system down)
-    return { component: 'audit', status: 'ok', latencyMs, lastError: undefined };
+    return { component: 'audit', status: 'ok', reason: 'ok', latencyMs, lastError: undefined };
   } catch (err) {
     return {
       component: 'audit',
       status: 'down',
+      reason: 'connection-error',
       latencyMs: getNow() - t0,
       lastError: err instanceof Error ? err.message : String(err),
     };

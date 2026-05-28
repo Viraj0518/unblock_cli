@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   identityPath,
+  personaHomeFor,
   readCommsEnv,
   readIdentity,
   setPersonaDirOverride,
@@ -32,6 +33,7 @@ import { runWhoami } from '../../src/commands/whoami.js';
 import { runLogout } from '../../src/commands/logout.js';
 import { createMockSubstrateFactory } from '../_fixtures/mock-substrate.js';
 import { makeTmpHome, type TmpHome } from '../_fixtures/tmp-home.js';
+import { main } from '../../src/main.js';
 
 let tmp: TmpHome;
 let personaDir: string;
@@ -130,6 +132,56 @@ describe('--persona flag plumbing', () => {
     expect(res2.agentName).toBe('default-persona');
   });
 
+  it('top-level --persona routes whoami through the selected persona dir', async () => {
+    await writeIdentity({
+      did: 'did:key:z6MkDefaultGlobal',
+      agentName: 'default-global',
+      ed25519PublicKeyHex: 'a'.repeat(64),
+      createdAt: '2026-05-28T00:00:00.000Z',
+    });
+    await writeCommsEnv({
+      natsUrl: 'tls://default-global:1',
+      credsPath: '/p/default-global',
+      workspaceId: 'ws-default-global',
+      orgId: 'org-default-global',
+      chatName: 'default-global',
+    });
+
+    const personaName = `global-persona-${process.pid}-${Date.now()}`;
+    const globalPersonaDir = personaHomeFor(personaName);
+    try {
+      setPersonaDirOverride(globalPersonaDir);
+      await writeIdentity({
+        did: 'did:key:z6MkGlobalPersona',
+        agentName: 'global-persona',
+        ed25519PublicKeyHex: 'b'.repeat(64),
+        createdAt: '2026-05-28T00:00:00.000Z',
+      });
+      await writeCommsEnv({
+        natsUrl: 'tls://global-persona:1',
+        credsPath: '/p/global-persona',
+        workspaceId: 'ws-global',
+        orgId: 'org-global',
+        chatName: 'global-persona',
+      });
+      setPersonaDirOverride(null);
+
+      const { code, stdout } = await runMainCapturingStdout([
+        '--persona',
+        personaName,
+        'whoami',
+      ]);
+
+      expect(code).toBe(0);
+      expect(stdout).toContain('handle:     global-persona');
+      expect(stdout).toContain('workspace:  ws-global');
+      expect(stdout).not.toContain('default-global');
+    } finally {
+      setPersonaDirOverride(null);
+      await rm(globalPersonaDir, { recursive: true, force: true });
+    }
+  });
+
   // ─── PR-pin: --persona now applies to comms verbs (dm/send/ask/listen/say/health/chat) ─────
   //
   // Before this PR, only login/whoami/logout/mint/invite honored --persona.
@@ -217,3 +269,24 @@ describe('--persona flag plumbing', () => {
     expect(await readCommsEnv()).toBeNull();
   });
 });
+
+async function runMainCapturingStdout(argv: readonly string[]): Promise<{
+  readonly code: number;
+  readonly stdout: string;
+}> {
+  const originalWrite = process.stdout.write;
+  const originalExitCode = process.exitCode;
+  let stdout = '';
+  process.exitCode = undefined;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const code = await main(argv);
+    return { code, stdout };
+  } finally {
+    process.stdout.write = originalWrite;
+    process.exitCode = originalExitCode;
+  }
+}

@@ -3,6 +3,7 @@ import { runHealth } from '../../src/commands/health.js';
 import { writeCommsEnv } from '../../src/auth/persona-store.js';
 import { createMockCommsFactory } from '../_fixtures/mock-comms.js';
 import { makeTmpHome, type TmpHome } from '../_fixtures/tmp-home.js';
+import { main } from '../../src/main.js';
 
 let tmp: TmpHome;
 beforeEach(async () => {
@@ -56,7 +57,10 @@ describe('runHealth --component auth', () => {
       { component: 'auth' },
     );
 
-    expect(result.components[0]?.status).toBe('degraded');
+    expect(result.components[0]?.status).toBe('down');
+    expect(result.components[0]?.reason).toBe('http-error');
+    expect(result.overallStatus).toBe('down');
+    expect(result.shouldExitNonZero).toBe(true);
     expect(result.allOk).toBe(false);
   });
 });
@@ -86,7 +90,7 @@ describe('runHealth --component substrate', () => {
     expect(result.allOk).toBe(true);
   });
 
-  it('reports degraded on 401 (reachable but no key)', async () => {
+  it('reports down on 401', async () => {
     const { factory } = createMockCommsFactory();
     const mockFetcher: typeof globalThis.fetch = async () =>
       new Response('{"error":"AUTH_MISSING"}', { status: 401 });
@@ -96,7 +100,9 @@ describe('runHealth --component substrate', () => {
       { component: 'substrate' },
     );
 
-    expect(result.components[0]?.status).toBe('degraded');
+    expect(result.components[0]?.status).toBe('down');
+    expect(result.components[0]?.reason).toBe('http-error');
+    expect(result.overallStatus).toBe('down');
   });
 });
 
@@ -114,7 +120,29 @@ describe('runHealth --component audit', () => {
         { component: 'audit' },
       );
       expect(result.components[0]?.status).toBe('degraded');
+      expect(result.components[0]?.reason).toBe('not-configured');
       expect(result.components[0]?.lastError).toMatch(/SUPABASE_SERVICE_ROLE_KEY/);
+      expect(result.overallStatus).toBe('degraded');
+      expect(result.shouldExitNonZero).toBe(false);
+    } finally {
+      if (prev !== undefined) process.env['SUPABASE_SERVICE_ROLE_KEY'] = prev;
+    }
+  });
+
+  it('strict mode exits non-zero for env-missing degraded audit', async () => {
+    const { factory } = createMockCommsFactory();
+    const prev = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+    delete process.env['SUPABASE_SERVICE_ROLE_KEY'];
+
+    try {
+      const result = await runHealth(
+        { commsFactory: factory, fetcher: async () => new Response('{}', { status: 200 }) },
+        { component: 'audit', strict: true },
+      );
+      expect(result.components[0]?.status).toBe('degraded');
+      expect(result.components[0]?.reason).toBe('not-configured');
+      expect(result.overallStatus).toBe('degraded');
+      expect(result.shouldExitNonZero).toBe(true);
     } finally {
       if (prev !== undefined) process.env['SUPABASE_SERVICE_ROLE_KEY'] = prev;
     }
@@ -190,6 +218,7 @@ describe('runHealth --json output shape', () => {
     for (const c of result.components) {
       expect(c).toHaveProperty('component');
       expect(c).toHaveProperty('status');
+      expect(c).toHaveProperty('reason');
       expect(c).toHaveProperty('latencyMs');
       expect(c).toHaveProperty('lastError');
     }
@@ -209,3 +238,38 @@ describe('runHealth --json output shape', () => {
     });
   });
 });
+
+describe('unblock health CLI validation', () => {
+  it('errors on unknown --component instead of falling back to all', async () => {
+    const { code, stderr } = await runMainCapturingStderr([
+      'health',
+      '--component',
+      'bogus',
+    ]);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain('--component must be one of auth | broker | substrate | audit | all');
+    expect(stderr).toContain('bogus');
+  });
+});
+
+async function runMainCapturingStderr(argv: readonly string[]): Promise<{
+  readonly code: number;
+  readonly stderr: string;
+}> {
+  const originalWrite = process.stderr.write;
+  const originalExitCode = process.exitCode;
+  let stderr = '';
+  process.exitCode = undefined;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === 'string' ? chunk : String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await main(argv);
+    return { code, stderr };
+  } finally {
+    process.stderr.write = originalWrite;
+    process.exitCode = originalExitCode;
+  }
+}
