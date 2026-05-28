@@ -11,7 +11,13 @@ import { readCommsEnv, v3EnvPath } from '../auth/persona-store.js';
 import { normalizeChatName } from '../comms/wire.js';
 
 export interface IdentityNormalizeOptions {
-  readonly persona: string;
+  /**
+   * Optional persona label for display + remediation hints. Persona-dir
+   * routing itself is owned by the persona-store resolution chain (CLI
+   * `--persona` flag → `UNBLOCK_HOME` env → default `~/.unblock/`), so
+   * this string is purely cosmetic. Tracked as kink K9.1.
+   */
+  readonly persona?: string;
   readonly apply?: boolean;
 }
 
@@ -26,17 +32,15 @@ export interface IdentityNormalizeResult {
 
 /** Resolve and optionally rewrite the current persona's canonical chat name. */
 export async function runIdentityNormalize(
-  opts: IdentityNormalizeOptions,
+  opts: IdentityNormalizeOptions = {},
 ): Promise<IdentityNormalizeResult> {
-  const persona = opts.persona.trim();
-  if (persona === '') {
-    throw new Error('identity normalize: --persona is required.');
-  }
+  const persona = opts.persona?.trim() ?? '';
 
   const env = await readCommsEnv();
   if (env === null) {
+    const personaHint = persona === '' ? '' : ` --persona ${persona}`;
     throw new Error(
-      `identity normalize: no comms-v3.env at ${v3EnvPath()}. Run \`unblock login <invite-code> --persona ${persona}\` first.`,
+      `identity normalize: no comms-v3.env at ${v3EnvPath()}. Run \`unblock login <invite-code>${personaHint}\` first.`,
     );
   }
 

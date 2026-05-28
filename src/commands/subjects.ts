@@ -55,10 +55,14 @@ export async function runSubjects(): Promise<SubjectsResult> {
     throw new Error(`subjects: could not decode NATS User JWT from ${env.credsPath}.`);
   }
 
-  const jwtName = pickStr(claims.name);
+  // env.chatName is the authoritative source for subject routing — it carries
+  // the canonical lowercase wire name written by `unblock login` (per ADR-147,
+  // the JWT `name` claim now holds the agent DID, not the chat name; deferring
+  // to `claims.name` here would make the dm_inbox_subject diverge from what
+  // `unblock listen` subscribes to). Tracked as kink #145/K22.
   const summary = buildSubjectSummary({
     workspaceId: env.workspaceId,
-    chatName: jwtName ?? env.chatName,
+    chatName: env.chatName,
   });
 
   return {
@@ -95,12 +99,6 @@ async function readCredsOrThrow(credsPath: string): Promise<string> {
     }
     throw err;
   }
-}
-
-function pickStr(v: string | undefined): string | undefined {
-  if (v === undefined) return undefined;
-  const t = v.trim();
-  return t === '' ? undefined : t;
 }
 
 function pickStringArray(v: readonly string[] | undefined): readonly string[] {

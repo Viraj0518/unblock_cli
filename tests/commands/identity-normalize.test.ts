@@ -125,6 +125,33 @@ describe('unblock identity normalize', () => {
     });
   });
 
+  it('regression K9.1: runs without --persona using UNBLOCK_HOME fallback', async () => {
+    // Pre-fix the command had .requiredOption('--persona') so it refused to
+    // run without the flag even when UNBLOCK_HOME was set. Other verbs
+    // (whoami/send/listen/monitor) fall through to UNBLOCK_HOME via
+    // persona-store's resolution chain — identity normalize must match.
+    await writeCommsEnv({
+      natsUrl: 'tls://default:1',
+      credsPath: '/default/creds',
+      workspaceId: 'ws-env-fallback',
+      orgId: 'org-test',
+      chatName: 'Env-Fallback',
+    });
+
+    const { code, stdout } = await runMainCapturingStdout([
+      'identity',
+      'normalize',
+      '--json',
+    ]);
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+
+    expect(code).toBe(0);
+    expect(parsed['old_chat_name']).toBe('Env-Fallback');
+    expect(parsed['new_chat_name']).toBe('env-fallback');
+    expect(parsed['would_change']).toBe(true);
+    expect(parsed['drain_subject_new']).toBe('unblock.chat.ws.ws-env-fallback.to.env-fallback');
+  });
+
   it('--persona routes to ~/.unblock-personas/<NAME>/ instead of UNBLOCK_HOME', async () => {
     await writeCommsEnv({
       natsUrl: 'tls://default:1',
