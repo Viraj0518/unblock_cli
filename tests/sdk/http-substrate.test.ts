@@ -28,7 +28,7 @@ function makeFetch(responses: ReadonlyArray<Response | (() => Response)>): {
 }
 
 describe('http-substrate enroll', () => {
-  it('posts to /v1/identity/enroll w/ X-Invite-Code header + {human_did, ed25519_pubkey_hex} body (live server shape)', async () => {
+  it('posts to /v1/identity/enroll w/ X-Invite-Code header + {human_did, ed25519_pubkey_hex, agent_name} body (live server shape)', async () => {
     // Server-of-truth: unblock-v02-mig/services/auth-issuer/src/handlers/
     // identity-enroll.ts. Returns user_jwt + creds_file_content + broker_url
     // + workspace_id + org_id + role + human_did + expires_at.
@@ -80,10 +80,10 @@ describe('http-substrate enroll', () => {
     const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
     expect(body['human_did']).toBe('did:key:z6Mkfake');
     expect(body['ed25519_pubkey_hex']).toBe('aa'.repeat(32));
+    expect(body['agent_name']).toBe('persona');
     // The OLD shape — proven to 401 on the live server — must NOT appear.
     expect(body['invite_code']).toBeUndefined();
     expect(body['did']).toBeUndefined();
-    expect(body['agent_name']).toBeUndefined();
     expect(body['ed25519_public_key_hex']).toBeUndefined();
   });
 

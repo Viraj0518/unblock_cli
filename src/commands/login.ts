@@ -5,7 +5,7 @@
  *   1. Mint a fresh did:key Ed25519 identity (writes ~/.unblock/identity.json).
  *   2. POST <authUrl>/v1/identity/enroll
  *        headers: X-Invite-Code: <code>
- *        body:    { human_did, ed25519_pubkey_hex }
+ *        body:    { human_did, ed25519_pubkey_hex, agent_name }
  *   3. Receive { user_jwt, creds_file_content, broker_url, workspace_id,
  *               org_id, role, human_did, expires_at, api_key, api_key_id }.
  *   4. Write ~/.unblock/comms-v3.creds (chmod 600) + ~/.unblock/comms-v3.env
@@ -68,6 +68,10 @@ export interface LoginResult {
 
 export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<LoginResult> {
   const cfg = await resolveConfig(opts);
+  const requestedAgentName =
+    opts.agentName !== undefined && opts.agentName.trim() !== ''
+      ? opts.agentName.trim()
+      : null;
 
   // Step 1: identity. Reuse if present (DID is persistent per
   // parent CLAUDE.md §"Identity convention").
@@ -82,17 +86,15 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
     const minted = await mintDidKey();
     identity = {
       did: minted.did,
-      agentName: opts.agentName?.trim() !== undefined && opts.agentName.trim() !== ''
-        ? opts.agentName.trim()
-        : shortenDid(minted.did),
+      agentName: requestedAgentName ?? shortenDid(minted.did),
       ed25519PublicKeyHex: minted.publicKeyHex,
       createdAt: (deps.nowIso ?? defaultNowIso)(),
     };
     await writeIdentity(identity);
     mintedNewIdentity = true;
-  } else if (opts.agentName !== undefined && opts.agentName.trim() !== '') {
+  } else if (requestedAgentName !== null) {
     // Caller wants to update the display handle without re-minting the DID.
-    const renamed: PersonaIdentity = { ...identity, agentName: opts.agentName.trim() };
+    const renamed: PersonaIdentity = { ...identity, agentName: requestedAgentName };
     await writeIdentity(renamed);
     identity = renamed;
   }
@@ -103,10 +105,10 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
 
   // Step 3: pick the chat_name we'll actually publish.
   //
-  // Issue #14 (2026-05-28): on re-login the server reuses the existing
-  // identity row and returns the stale chat_name it minted on first enroll.
-  // If the user passed `--agent-name X` AND X differs from what was on disk,
-  // they want messages to route to `X`, not to the stale random handle.
+  // Issues #14/#140: when the user passes `--agent-name X`, X is the canonical
+  // chat_name for both re-login renames and fresh enrolls. The server should
+  // agree once it receives `agent_name`, but keep the client-side guard because
+  // older/bad enroll responses can still return a stale DID-short handle.
   //
   // Single client-side fix point: lowercase X via the same `normalizeChatName`
   // helper the wire layer uses for DM subjects, then override the value we
@@ -115,23 +117,20 @@ export async function runLogin(deps: LoginDeps, opts: LoginOptions): Promise<Log
   // on both sides of the wire without a new round-trip or endpoint.
   //
   // Edge cases:
-  //   * --agent-name not passed → priorAgentName === identity.agentName,
-  //     no override (standard reconnect flow keeps server-supplied value).
-  //   * --agent-name passed but normalizes to the server value → no-op.
-  //   * --agent-name passed and renames → override + stderr line.
+  //   * --agent-name not passed -> no override (standard reconnect flow keeps
+  //     the server-supplied value).
+  //   * --agent-name passed but normalizes to the server value -> no-op.
+  //   * --agent-name passed for fresh enroll or true rename -> override.
   const desiredChatName = normalizeChatName(identity.agentName);
   let chatName = enrolled.name;
-  const isRename =
-    !mintedNewIdentity &&
-    priorAgentName !== null &&
-    opts.agentName !== undefined &&
-    opts.agentName.trim() !== '' &&
-    opts.agentName.trim() !== priorAgentName;
-  if (isRename && desiredChatName !== enrolled.name) {
-    process.stderr.write(
-      `chat_name updated: ${enrolled.name} → ${desiredChatName} ` +
-        `(client-side override; --agent-name changed from "${priorAgentName}" to "${identity.agentName}")\n`,
-    );
+  const shouldHonorRequestedAgentName =
+    requestedAgentName !== null &&
+    (mintedNewIdentity || (priorAgentName !== null && requestedAgentName !== priorAgentName));
+  if (shouldHonorRequestedAgentName && desiredChatName !== enrolled.name) {
+    const reason = mintedNewIdentity
+      ? `(client-side override; fresh enroll used --agent-name "${identity.agentName}")`
+      : `(client-side override; --agent-name changed from "${priorAgentName}" to "${identity.agentName}")`;
+    process.stderr.write(`chat_name updated: ${enrolled.name} -> ${desiredChatName} ${reason}\n`);
     chatName = desiredChatName;
   }
 

@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { runLogin } from '../../src/commands/login.js';
 import { runLogout } from '../../src/commands/logout.js';
+import { shortenDid } from '../../src/auth/did.js';
 import {
   identityPath,
   readIdentity,
   v3CredsPath,
   v3EnvPath,
 } from '../../src/auth/persona-store.js';
+import type { EnrollResult, SubstrateFactory } from '../../src/sdk/types.js';
 import { createMockSubstrateFactory } from '../_fixtures/mock-substrate.js';
 import { makeTmpHome, type TmpHome } from '../_fixtures/tmp-home.js';
 
@@ -18,6 +20,33 @@ beforeEach(async () => {
 afterEach(async () => {
   await tmp.dispose();
 });
+
+function enrollResult(name: string): EnrollResult {
+  return {
+    natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
+    natsUrl: 'tls://nats.kaeva.app:39899',
+    workspaceId: 'ws',
+    orgId: 'org',
+    name,
+  };
+}
+
+function createEchoNameSubstrateFactory(): ReturnType<typeof createMockSubstrateFactory> {
+  const { factory, state } = createMockSubstrateFactory();
+  const echoFactory = {
+    create(options) {
+      const client = factory.create(options);
+      return {
+        ...client,
+        async enroll(input) {
+          state.enrollResponse = enrollResult(input.identity.agentName);
+          return client.enroll(input);
+        },
+      };
+    },
+  } satisfies SubstrateFactory;
+  return { factory: echoFactory, state };
+}
 
 describe('runLogin', () => {
   it('mints identity, enrolls, writes comms-v3.{creds,env}', async () => {
@@ -121,6 +150,56 @@ describe('runLogin', () => {
     expect(result.apiKeyId).toBeUndefined();
     const envContent = await readFile(v3EnvPath(), 'utf-8');
     expect(envContent).not.toContain('UNBLOCK_API_KEY=');
+  });
+
+  it('fresh enroll with --agent-name lowercases chat_name (issue #140)', async () => {
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = enrollResult('Viraj-codex-X');
+
+    const result = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-1', agentName: 'Viraj-codex-X' },
+    );
+
+    expect(result.mintedNewIdentity).toBe(true);
+    expect(result.chatName).toBe('viraj-codex-x');
+    expect(state.enrollCalls).toHaveLength(1);
+    expect(state.enrollCalls[0]?.agentName).toBe('Viraj-codex-X');
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain('UNBLOCK_CHAT_NAME=viraj-codex-x');
+  });
+
+  it('fresh enroll without --agent-name preserves DID-short fallback (issue #140)', async () => {
+    const { factory, state } = createEchoNameSubstrateFactory();
+
+    const result = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-1' },
+    );
+
+    const expectedChatName = shortenDid(result.did);
+    expect(result.mintedNewIdentity).toBe(true);
+    expect(result.chatName).toBe(expectedChatName);
+    expect(state.enrollCalls[0]?.agentName).toBe(expectedChatName);
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain(`UNBLOCK_CHAT_NAME=${expectedChatName}`);
+  });
+
+  it('fresh enroll defensively overrides wrong server chat_name when --agent-name is set (issue #140)', async () => {
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = enrollResult('shnxmwlu');
+
+    const result = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-1', agentName: 'Viraj-codex-3' },
+    );
+
+    expect(result.mintedNewIdentity).toBe(true);
+    expect(result.chatName).toBe('viraj-codex-3');
+    expect(state.enrollCalls[0]?.agentName).toBe('Viraj-codex-3');
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain('UNBLOCK_CHAT_NAME=viraj-codex-3');
+    expect(envContent).not.toContain('UNBLOCK_CHAT_NAME=shnxmwlu');
   });
 
   it('renames stale chat_name on re-login when --agent-name differs (issue #14 · 2026-05-28)', async () => {
