@@ -404,6 +404,13 @@ function buildProgram(): Command {
             `  workspace:  ${result.workspaceId}`,
             `  broker:     ${result.broker}`,
             ...(result.expiresAt !== undefined ? [`  jwt expiry: ${result.expiresAt}`] : []),
+            // P1 substrate-unreachable fix · 2026-05-27 — surface api-key
+            // status so the user knows whether substrate verbs work without
+            // a separate `profile add`. `apiKeyMinted=true` ⇒ comms-v3.env
+            // now carries UNBLOCK_API_KEY and `remember`/`query` will auth.
+            result.apiKeyMinted
+              ? `  api key:    ${result.apiKeyId ?? '(minted)'} → substrate reachable`
+              : '  api key:    (not minted; substrate verbs will 401 until you `unblock profile add --api-key`)',
             result.mintedNewIdentity ? '(new identity minted)' : '(existing identity reused)',
           ].join('\n') + '\n',
         );

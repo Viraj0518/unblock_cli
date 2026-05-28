@@ -160,6 +160,19 @@ export interface CommsEnv {
   readonly chatName: string;
   /** ISO 8601 expiry from the JWT, if the server returned one. */
   readonly expiresAt?: string;
+  /**
+   * Substrate API key (`unb_<64hex>`). Written by `unblock login` when the
+   * auth-issuer returned one in the enroll response (P1 substrate-unreachable
+   * fix · 2026-05-27). Loaded back by `resolveConfig` so substrate verbs
+   * (remember / query / share / …) auto-authenticate with no further
+   * `profile add` step.
+   *
+   * Optional because:
+   *   1. Older auth-issuer deployments don't return an api_key.
+   *   2. The CLI can be used in comms-only mode (`chat`/`say`/`dm`/`ask`)
+   *      without ever talking to the substrate.
+   */
+  readonly apiKey?: string;
 }
 
 export async function readCommsEnv(): Promise<CommsEnv | null> {
@@ -201,9 +214,18 @@ export function parseCommsEnv(raw: string): CommsEnv | null {
     return null;
   }
   const expiresAt = map.get('UNBLOCK_JWT_EXPIRES_AT');
-  return expiresAt !== undefined
-    ? { natsUrl, credsPath, workspaceId, orgId, chatName, expiresAt }
-    : { natsUrl, credsPath, workspaceId, orgId, chatName };
+  const apiKey = map.get('UNBLOCK_API_KEY');
+  // Build the result conditionally to honor exactOptionalPropertyTypes.
+  const env: { -readonly [K in keyof CommsEnv]: CommsEnv[K] } = {
+    natsUrl,
+    credsPath,
+    workspaceId,
+    orgId,
+    chatName,
+  };
+  if (expiresAt !== undefined) env.expiresAt = expiresAt;
+  if (apiKey !== undefined && apiKey !== '') env.apiKey = apiKey;
+  return env;
 }
 
 export async function writeCommsEnv(env: CommsEnv): Promise<void> {
@@ -218,6 +240,13 @@ export async function writeCommsEnv(env: CommsEnv): Promise<void> {
   ];
   if (env.expiresAt !== undefined) {
     lines.push(`UNBLOCK_JWT_EXPIRES_AT=${env.expiresAt}`);
+  }
+  if (env.apiKey !== undefined && env.apiKey !== '') {
+    // Substrate API key. Persisted alongside the NATS creds so `remember`
+    // / `query` / … auto-authenticate without a separate `profile add`.
+    // Mode 0o600 below scopes read access to the current user; the key is
+    // a bearer credential and must not leak via `cat` from other accounts.
+    lines.push(`UNBLOCK_API_KEY=${env.apiKey}`);
   }
   await writeFile(v3EnvPath(), `${lines.join('\n')}\n`, { mode: 0o600 });
 }

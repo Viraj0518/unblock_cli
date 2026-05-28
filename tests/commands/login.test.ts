@@ -78,6 +78,51 @@ describe('runLogin', () => {
     expect(second.mintedNewIdentity).toBe(false);
   });
 
+  it('persists UNBLOCK_API_KEY to comms-v3.env when enroll returns api_key (P1 fix · 2026-05-27)', async () => {
+    // Auth-issuer fix: enroll now mints a substrate API key. The CLI
+    // must persist it to comms-v3.env so substrate verbs auto-authenticate.
+    // Without this, fresh personas had working comms but every substrate
+    // verb (remember/query/share/…) 401'd with AUTH_MISSING.
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = {
+      natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      workspaceId: 'ws',
+      orgId: 'org-A',
+      name: 'Viraj-Alpha',
+      apiKey: 'unb_' + 'd'.repeat(64),
+      apiKeyId: 'akey_enroll_abcdef0123456789',
+    };
+    const result = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-1' },
+    );
+    expect(result.apiKeyMinted).toBe(true);
+    expect(result.apiKeyId).toBe('akey_enroll_abcdef0123456789');
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).toContain(`UNBLOCK_API_KEY=unb_${'d'.repeat(64)}`);
+  });
+
+  it('omits UNBLOCK_API_KEY when enroll does NOT return api_key (older auth-issuer back-compat)', async () => {
+    const { factory, state } = createMockSubstrateFactory();
+    state.enrollResponse = {
+      natsCreds: '-----BEGIN NATS USER JWT-----\nFAKEJWT\n------END NATS USER JWT------\n',
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      workspaceId: 'ws',
+      orgId: 'org',
+      name: 'persona',
+      // no api_key field — simulating older deployed auth-issuer
+    };
+    const result = await runLogin(
+      { substrateFactory: factory },
+      { inviteCode: 'INV-1' },
+    );
+    expect(result.apiKeyMinted).toBe(false);
+    expect(result.apiKeyId).toBeUndefined();
+    const envContent = await readFile(v3EnvPath(), 'utf-8');
+    expect(envContent).not.toContain('UNBLOCK_API_KEY=');
+  });
+
   it('runLogout removes identity + comms files (idempotent)', async () => {
     const { factory, state } = createMockSubstrateFactory();
     state.enrollResponse = {

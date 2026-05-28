@@ -273,6 +273,27 @@ export interface EnrollResult {
   readonly name: string;
   /** ISO timestamp when the JWT expires (optional, server may omit). */
   readonly expiresAt?: string;
+  /**
+   * Substrate API key (`unb_<64hex>`), minted by the auth-issuer in the
+   * SAME round-trip as the NATS JWT (auth-issuer fix 2026-05-27 for the
+   * P1 substrate-unreachable bug). Persisted to `comms-v3.env` as
+   * `UNBLOCK_API_KEY=…` so subsequent substrate verbs (remember, query,
+   * share, …) auto-load it via `resolveConfig`. The substrate EF
+   * (`unblock-api`) validates `X-API-Key: unb_<hex>` against
+   * `public.api_keys.key_sha256`; without this field every fresh-persona
+   * substrate call returns 401 AUTH_MISSING.
+   *
+   * Optional because older / mocked auth-issuer responses (and the
+   * legacy `{nats_creds, nats_url, name}` shape) don't include it.
+   */
+  readonly apiKey?: string;
+  /**
+   * Server-assigned opaque ID of the api_keys row (e.g.
+   * `akey_enroll_<16hex>`). Audit-only — not used by the substrate.
+   * Useful for log correlation + future "revoke this enrollment key"
+   * tooling.
+   */
+  readonly apiKeyId?: string;
 }
 
 /** Factory that builds a substrate client bound to an auth-issuer URL.

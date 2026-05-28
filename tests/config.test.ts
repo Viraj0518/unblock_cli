@@ -4,7 +4,13 @@ import { writeCommsEnv } from '../src/auth/persona-store.js';
 import { makeTmpHome, type TmpHome } from './_fixtures/tmp-home.js';
 
 let tmp: TmpHome;
-const ENV_KEYS = ['UNBLOCK_NATS_URL', 'UNBLOCK_AUTH_URL', 'UNBLOCK_WORKSPACE_ID', 'UNBLOCK_CHAT_NAME'];
+const ENV_KEYS = [
+  'UNBLOCK_NATS_URL',
+  'UNBLOCK_AUTH_URL',
+  'UNBLOCK_WORKSPACE_ID',
+  'UNBLOCK_CHAT_NAME',
+  'UNBLOCK_API_KEY',
+];
 const prev: Record<string, string | undefined> = {};
 
 beforeEach(async () => {
@@ -64,5 +70,63 @@ describe('resolveConfig', () => {
     process.env['UNBLOCK_NATS_URL'] = 'tls://from-env:2';
     const cfg = await resolveConfig({ natsUrl: 'tls://from-flag:3' });
     expect(cfg.natsUrl).toBe('tls://from-flag:3');
+  });
+
+  it('reads UNBLOCK_API_KEY from comms-v3.env when login persisted it (P1 fix · 2026-05-27)', async () => {
+    // After the 2026-05-27 P1 substrate-unreachable fix, `unblock login`
+    // writes UNBLOCK_API_KEY into comms-v3.env. resolveConfig MUST surface
+    // it through .apiKey so substrate verbs auto-load the key — otherwise
+    // the file is written but never read and we're back to the bug.
+    await writeCommsEnv({
+      natsUrl: 'tls://nats.kaeva.app:39899',
+      credsPath: '/p',
+      workspaceId: 'ws',
+      orgId: 'org',
+      chatName: 'persona',
+      apiKey: 'unb_' + 'a'.repeat(64),
+    });
+    const cfg = await resolveConfig();
+    expect(cfg.apiKey).toBe('unb_' + 'a'.repeat(64));
+  });
+
+  it('UNBLOCK_API_KEY env var overrides the persona file', async () => {
+    await writeCommsEnv({
+      natsUrl: 'tls://x:1',
+      credsPath: '/p',
+      workspaceId: 'ws',
+      orgId: 'org',
+      chatName: 'persona',
+      apiKey: 'unb_' + 'a'.repeat(64),
+    });
+    process.env['UNBLOCK_API_KEY'] = 'unb_' + 'b'.repeat(64);
+    const cfg = await resolveConfig();
+    expect(cfg.apiKey).toBe('unb_' + 'b'.repeat(64));
+  });
+
+  it('--api-key CLI flag beats both env var and persona file', async () => {
+    await writeCommsEnv({
+      natsUrl: 'tls://x:1',
+      credsPath: '/p',
+      workspaceId: 'ws',
+      orgId: 'org',
+      chatName: 'persona',
+      apiKey: 'unb_' + 'a'.repeat(64),
+    });
+    process.env['UNBLOCK_API_KEY'] = 'unb_' + 'b'.repeat(64);
+    const cfg = await resolveConfig({ apiKey: 'unb_' + 'c'.repeat(64) });
+    expect(cfg.apiKey).toBe('unb_' + 'c'.repeat(64));
+  });
+
+  it('apiKey is undefined when neither env, persona file, nor override sets it (older deploy back-compat)', async () => {
+    await writeCommsEnv({
+      natsUrl: 'tls://x:1',
+      credsPath: '/p',
+      workspaceId: 'ws',
+      orgId: 'org',
+      chatName: 'persona',
+      // no apiKey — simulating pre-fix auth-issuer
+    });
+    const cfg = await resolveConfig();
+    expect(cfg.apiKey).toBeUndefined();
   });
 });
