@@ -201,7 +201,14 @@ function jsConsumeIterable(
           inner = messages[Symbol.asyncIterator]();
           if (opts.signal !== undefined) {
             const abort = (): void => {
-              messages?.stop().catch(() => undefined);
+              // `messages` may be undefined if the abort fires before setup()
+              // ran far enough to assign it (race during JetStream consume
+              // bring-up). Even when set, some `@nats-io/jetstream` paths
+              // return void from `stop()` instead of a Promise. Both cases
+              // must be tolerated — `?.` alone is not enough because
+              // `undefined.catch(...)` (the optional-chain short-circuit
+              // result) is a TypeError. See live repro 2026-05-28 02:50 UTC.
+              safeStop(messages);
             };
             if (opts.signal.aborted) abort();
             else opts.signal.addEventListener('abort', abort, { once: true });
@@ -231,7 +238,10 @@ function jsConsumeIterable(
           };
         },
         return: async (): Promise<IteratorResult<JetStreamFrame>> => {
-          await messages?.stop().catch(() => undefined);
+          // Same guard as the abort path above — `stop()` may return void
+          // or `messages` may be undefined if iterator.return() is called
+          // before setup completed.
+          await safeStop(messages);
           return { value: undefined, done: true };
         },
       };
@@ -261,4 +271,45 @@ function buildConsumerConfig(opts: JetStreamConsumeOptions): Record<string, unkn
 
 function randomToken(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+/**
+ * Best-effort stop for a JetStream `ConsumerMessages` handle.
+ *
+ * Three failure modes we MUST tolerate without throwing:
+ *   1. `messages` is undefined — setup() races vs the abort signal; the
+ *      iterator promise may not have resolved before the operator's
+ *      `--timeout` fires (live repro 2026-05-28 02:50 UTC).
+ *   2. `stop()` returns void — some `@nats-io/jetstream` code paths in
+ *      v3+ are synchronous; `.catch(...)` on void throws TypeError.
+ *   3. `stop()` returns a rejected promise — broker disconnected mid-
+ *      teardown; we don't care, the abort path is already terminal.
+ *
+ * Returns a Promise so callers can `await` it from `iterator.return()`,
+ * but a fire-and-forget call (e.g. inside an `abort` listener) is fine
+ * because all three error modes are swallowed internally.
+ *
+ * Exported for unit testing — production callers stay inside this module.
+ * Typed loosely (`unknown`) so tests can pass synthetic stop()-shaped
+ * objects without importing internal NATS types.
+ */
+export function safeStop(messages: { stop: () => unknown } | undefined): Promise<void> {
+  if (messages === undefined) return Promise.resolve();
+  let result: unknown;
+  try {
+    result = messages.stop();
+  } catch {
+    return Promise.resolve();
+  }
+  if (
+    result !== undefined &&
+    result !== null &&
+    typeof (result as { then?: unknown }).then === 'function'
+  ) {
+    return (result as Promise<unknown>).then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+  return Promise.resolve();
 }

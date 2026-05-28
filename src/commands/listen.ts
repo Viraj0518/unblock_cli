@@ -190,6 +190,18 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
     return true;
   };
 
+  // Diagnostic: surface the subject the listener resolved to. JS subscribers
+  // can be looking at the wrong subject for many reasons (mixed-case persona,
+  // misspelled --channel, stale env), and the 2026-05-28 zero-events bug took
+  // hours to triangulate precisely because we had no signal of which subject
+  // was on the wire. Written to stderr so --json stdout stays parseable.
+  // Suppress with UNBLOCK_LISTEN_QUIET=1 for scripting use-cases that pipe
+  // stderr too.
+  if (process.env['UNBLOCK_LISTEN_QUIET'] !== '1') {
+    const mode = replayMode === null ? 'live-tail' : `js-replay(${replayMode.kind})`;
+    process.stderr.write(`[listen] subscribing to subject: ${subject} mode=${mode}\n`);
+  }
+
   if (replayMode !== null) {
     const jsResult = await runJetStreamReplay({
       client,
@@ -211,14 +223,15 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
   const sub = client.subscribe(subject);
 
   // ── P0 defensive subscribe: legacy mixed-case chat_name ────────────────────
-  // If the persona's `comms-v3.env` has a mixed-case `UNBLOCK_CHAT_NAME` (e.g.
-  // `Viraj-Alpha`) the default DM-inbox subject above resolves to a different
-  // NATS subject than what fresh senders publish to (which are lowercased at
-  // subject-construction time — see `normalizeChatName` in src/comms/wire.ts).
-  // We ALSO subscribe to the lowercased variant so messages from updated
-  // senders are not silently dropped during the transitional period before
-  // the operator re-mints the persona. Operators see a one-shot WARN so they
-  // know to fix the underlying chat_name (re-mint, or hand-edit the env file).
+  // Symmetric to the wire-side normalization in `resolveSubject`. With the
+  // 2026-05-28 fix, `subject` above is now the LOWERCASED form (matching
+  // what every current sender publishes to). If the persona's
+  // `UNBLOCK_CHAT_NAME` is still mixed-case in `comms-v3.env`, a legacy
+  // sender that hasn't picked up the normalization will publish to the
+  // mixed-case subject and we'd miss those messages — so we also subscribe
+  // to the as-loaded mixed-case variant as a transitional safety net.
+  // Operators see a one-shot WARN so they know to fix the underlying
+  // chat_name (re-mint, or hand-edit the env file).
   let auxSub: Subscription | undefined;
   if (
     opts.subject === undefined &&
@@ -226,10 +239,11 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
     cfg.chatName !== undefined &&
     cfg.chatName !== normalizeChatName(cfg.chatName)
   ) {
-    const auxSubject = `unblock.chat.ws.${cfg.workspaceId}.to.${normalizeChatName(cfg.chatName)}`;
+    const auxSubject = `unblock.chat.ws.${cfg.workspaceId}.to.${cfg.chatName}`;
     process.stderr.write(
       `WARN: chat_name "${cfg.chatName}" has uppercase chars — NATS subjects are case-sensitive, ` +
-      `messages may be dropped. Subscribing to "${auxSubject}" too as a transitional safety net. ` +
+      `messages may be dropped. Also subscribing to "${auxSubject}" as a transitional safety net for ` +
+      `legacy senders that haven't been updated to lowercase recipients. ` +
       `Re-run \`unblock login <new-invite-code>\` (or hand-edit ~/.unblock/comms-v3.env) to lowercase it.\n`,
     );
     auxSub = client.subscribe(auxSubject);
@@ -304,8 +318,20 @@ function resolveSubject(
 ): string {
   if (opts.subject !== undefined) return opts.subject;
   if (opts.channel !== undefined) return `unblock.channel.${opts.channel}.>`;
-  // Default: DM inbox for current persona
-  const chatName = cfg.chatName ?? 'me';
+  // Default: DM inbox for current persona. We lowercase the chat name to
+  // match send/dm/ask's `chatDmSubject(...)` — those normalize via
+  // `normalizeChatName()` in src/comms/wire.ts, so a listener that does NOT
+  // normalize subscribes to a different subject than current senders publish
+  // to. That mismatch was the 2026-05-28 P1 root cause for `--since 30m
+  // --timeout 15` emitting 0 events on a legacy mixed-case persona
+  // (`UNBLOCK_CHAT_NAME=Viraj-Alpha`): the JetStream consumer's
+  // `filter_subject` was mixed-case while every retained message in the
+  // 30-day window was published to the lowercased subject.
+  //
+  // For raw subscribe (non-JetStream) the auxSub double-subscribe in
+  // runListen() still adds the mixed-case variant on top, so legacy senders
+  // that haven't been updated yet are also covered.
+  const chatName = cfg.chatName !== undefined ? normalizeChatName(cfg.chatName) : 'me';
   return `unblock.chat.ws.${cfg.workspaceId}.to.${chatName}`;
 }
 
