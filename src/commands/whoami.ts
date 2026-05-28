@@ -27,6 +27,7 @@ export interface WhoamiResult {
   readonly workspaceId?: string;
   readonly orgId?: string;
   readonly jwtExpiresAt?: string;
+  readonly jwtExpiresInSeconds?: number;
   /** Lines suitable for printing to stdout. */
   readonly lines: readonly string[];
 }
@@ -50,6 +51,7 @@ export async function runWhoami(): Promise<WhoamiResult> {
   const expiresAt = claims?.exp !== undefined
     ? new Date(claims.exp * 1000).toISOString()
     : env?.expiresAt;
+  const expiresInSeconds = secondsUntil(expiresAt);
 
   const lines: string[] = [];
   if (identity !== null) {
@@ -73,7 +75,15 @@ export async function runWhoami(): Promise<WhoamiResult> {
       ? { chatName: env.chatName, broker: env.natsUrl, workspaceId: env.workspaceId, orgId: env.orgId }
       : {}),
     ...(expiresAt !== undefined ? { jwtExpiresAt: expiresAt } : {}),
+    ...(expiresInSeconds !== undefined ? { jwtExpiresInSeconds: expiresInSeconds } : {}),
     lines,
   };
   return result;
+}
+
+function secondsUntil(iso: string | undefined): number | undefined {
+  if (iso === undefined) return undefined;
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return undefined;
+  return Math.max(0, Math.floor((ms - Date.now()) / 1000));
 }

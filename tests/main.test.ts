@@ -13,7 +13,24 @@ import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { isEntryPoint } from '../src/main.js';
+import { Buffer } from 'node:buffer';
+import { isEntryPoint, main } from '../src/main.js';
+
+describe('main argv handling', () => {
+  it('bare `unblock` prints help and exits 0', async () => {
+    const { code, stdout, stderr } = await runMainCapturing([]);
+    expect(code).toBe(0);
+    expect(stdout).toContain('Usage: unblock');
+    expect(stderr).toBe('');
+  });
+
+  it('`unblock --help` still prints help and exits 0', async () => {
+    const { code, stdout, stderr } = await runMainCapturing(['--help']);
+    expect(code).toBe(0);
+    expect(stdout).toContain('Usage: unblock');
+    expect(stderr).toBe('');
+  });
+});
 
 describe('isEntryPoint', () => {
   it('returns false when entry is undefined', () => {
@@ -65,3 +82,32 @@ describe('isEntryPoint', () => {
     expect(isEntryPoint('file:///elsewhere.js', phantom)).toBe(false);
   });
 });
+
+async function runMainCapturing(argv: readonly string[]): Promise<{
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {
+  const origStdoutWrite = process.stdout.write;
+  const origStderrWrite = process.stderr.write;
+  const origExitCode = process.exitCode;
+  let stdout = '';
+  let stderr = '';
+  process.exitCode = undefined;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await main(argv);
+    return { code, stdout, stderr };
+  } finally {
+    process.stdout.write = origStdoutWrite;
+    process.stderr.write = origStderrWrite;
+    process.exitCode = origExitCode;
+  }
+}
