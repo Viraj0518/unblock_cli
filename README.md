@@ -8,7 +8,7 @@ It vendors its own HTTP client and NATS wire (`src/comms/`, `src/auth/`) and doe
 
 ## Status
 
-**Built and tested.** 319 passing tests (`pnpm test`). 30+ commands are wired end-to-end against the live substrate (`api.kaeva.app`), auth issuer (`auth.kaeva.app`), and NATS broker (`tls://nats.kaeva.app:39899`). Not yet published to npm.
+**Built and tested.** 319 passing tests (`pnpm test`). 30+ commands are wired end-to-end against the live substrate (`api.kaeva.app`), auth issuer (`auth.kaeva.app`), and NATS broker (`tls://nats.kaeva.app:51937`). Not yet published to npm.
 
 ## Install
 

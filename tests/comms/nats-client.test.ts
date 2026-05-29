@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   assertSecureBrokerUrl,
+  BrokerUnreachableError,
   createNatsJetStreamForTest,
+  parseBrokerServers,
   safeStop,
 } from '../../src/comms/nats-client.js';
 import type { JetStream, JetStreamConsumeOptions } from '../../src/sdk/types.js';
@@ -206,6 +208,66 @@ describe('assertSecureBrokerUrl', () => {
     expect(() =>
       assertSecureBrokerUrl('nats://127.0.0.1:4222', { allowLocalhost: true }),
     ).not.toThrow();
+  });
+});
+
+// ─── Multi-endpoint resilience (W1 cloud-readiness) ──────────────────────────
+//
+// The connect path accepts a comma-separated fallback list so a shipped
+// binary can ride out a single broker port/host move without a re-release.
+// Every candidate must be validated through assertSecureBrokerUrl (a
+// localhost fallback in the middle of the list must NOT sneak past the
+// secure-URL guard), and total connect failure must surface one clean
+// operator line, not a raw NATS stack.
+describe('parseBrokerServers', () => {
+  it('returns a single-element list for one URL', () => {
+    expect(parseBrokerServers('tls://nats.kaeva.app:51937')).toEqual([
+      'tls://nats.kaeva.app:51937',
+    ]);
+  });
+
+  it('splits a comma-separated fallback list and preserves order', () => {
+    expect(
+      parseBrokerServers('tls://a.kaeva.app:51937, tls://b.kaeva.app:51937'),
+    ).toEqual(['tls://a.kaeva.app:51937', 'tls://b.kaeva.app:51937']);
+  });
+
+  it('drops empty segments from a trailing/double comma', () => {
+    expect(parseBrokerServers('tls://a:51937,,')).toEqual(['tls://a:51937']);
+  });
+
+  it('throws on an all-empty spec rather than returning []', () => {
+    expect(() => parseBrokerServers('  , ,')).toThrow(/broker URL is empty/);
+  });
+
+  it('every parsed server can be re-validated — a localhost fallback is caught', () => {
+    const servers = parseBrokerServers('tls://a.kaeva.app:51937,nats://127.0.0.1:4222');
+    const offenders = servers.filter((s) => {
+      try {
+        assertSecureBrokerUrl(s);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    expect(offenders).toEqual(['nats://127.0.0.1:4222']);
+  });
+});
+
+describe('BrokerUnreachableError', () => {
+  it('renders one operator-facing line pointing at the health verb', () => {
+    const err = new BrokerUnreachableError(
+      ['tls://a:51937', 'tls://b:51937'],
+      'getaddrinfo ENOTFOUND',
+    );
+    expect(err.message).toBe(
+      'broker unreachable at tls://a:51937, tls://b:51937 — run unblock health --component broker',
+    );
+    expect(err.name).toBe('BrokerUnreachableError');
+    expect(err.detail).toBe('getaddrinfo ENOTFOUND');
+    expect(err.servers).toEqual(['tls://a:51937', 'tls://b:51937']);
+    // Must not leak a raw stack onto the operator-facing message line.
+    expect(err.message).not.toContain('\n');
   });
 });
 

@@ -14,7 +14,19 @@
 import { readCommsEnv, type CommsEnv } from './auth/persona-store.js';
 import { DEFAULT_AUTH_URL, DEFAULT_SUBSTRATE_URL } from './sdk/http-substrate.js';
 
-export const DEFAULT_BROKER_URL = 'tls://nats.kaeva.app:39899';
+/**
+ * Default NATS broker. Pinned to :51937 — the live broker port as of
+ * 2026-05-29. The previous default (:39899) is DEAD (connection refused),
+ * so every fresh `unblock login` that fell through to it could never reach
+ * comms until the user manually set UNBLOCK_NATS_URL.
+ *
+ * This is a stopgap: a raw host:port baked into shipped binaries means the
+ * next broker move re-bricks them. The real design-out is an SRV record or a
+ * stable proxy in front of the broker (tracked as the post-wave follow-up).
+ * `resolveConfig` accepts a comma-separated fallback list in UNBLOCK_NATS_URL
+ * (see `parseBrokerServers`) as the interim mitigation.
+ */
+export const DEFAULT_BROKER_URL = 'tls://nats.kaeva.app:51937';
 
 export interface ResolvedConfig {
   /** NATS broker URL. */

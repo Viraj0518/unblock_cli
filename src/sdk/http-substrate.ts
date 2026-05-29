@@ -7,8 +7,9 @@
  *     today; will become its own polyrepo's deployed EF).
  *   - `substrateUrl` hosts every substrate verb (remember, query, share,
  *     list, purchase, verify, attest, subscribe, update, extract, forget).
- *     Live target: the Supabase `unblock-api` edge function at
- *     `https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api`.
+ *     Live target: `https://api.kaeva.app` (CF-fronted indirection in front
+ *     of the Supabase `unblock-api` edge function, so the substrate project
+ *     can move underneath without re-releasing shipped binaries).
  *
  * Iter-3 (2026-05-27) the CLI's substrate calls were 404-ing because they
  * pointed at `authUrl` (which only knows `/v1/identity/enroll`) and used
@@ -65,13 +66,19 @@ import type { PersonaIdentity } from '../auth/persona-store.js';
 
 export const DEFAULT_AUTH_URL = 'https://auth.kaeva.app';
 /**
- * Live substrate EF. When this changes (multi-tenant per-org deployments,
- * for example), it should move to `resolveConfig` — but a single hardcoded
- * default beats the previous "fall through to authUrl and 404" behaviour
- * which silently broke every substrate verb shipped in the CLI.
+ * Live substrate default. Points at the CF-fronted `api.kaeva.app` (returns a
+ * structured 401 unauthenticated, 200 on `/v1/health`) — NOT the raw Supabase
+ * project URL. The indirection is the whole point: baking
+ * `wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api` into shipped
+ * binaries meant a Supabase project move (per-org tenancy, region change,
+ * project re-create) would brick every binary in the field. With api.kaeva.app
+ * in front, the substrate can move underneath without a CLI re-release.
+ *
+ * Verified 2026-05-29: GET api.kaeva.app/v1/health → 200; POST /v1/query and
+ * /v1/remember → structured 401 without a key (route resolves, auth-gated).
+ * Override with UNBLOCK_SUBSTRATE_URL for self-hosted / per-org endpoints.
  */
-export const DEFAULT_SUBSTRATE_URL =
-  'https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api';
+export const DEFAULT_SUBSTRATE_URL = 'https://api.kaeva.app';
 
 export function createHttpSubstrateFactory(
   fetcher: typeof globalThis.fetch = globalThis.fetch,

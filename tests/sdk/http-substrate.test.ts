@@ -403,9 +403,10 @@ describe('http-substrate remember/query', () => {
     expect(calls[0]?.url).toBe('https://only-auth.example/v1/remember');
   });
 
-  it('exposes DEFAULT_SUBSTRATE_URL pointing at the live Supabase EF', () => {
-    expect(DEFAULT_SUBSTRATE_URL).toBe(
-      'https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api',
-    );
+  it('exposes DEFAULT_SUBSTRATE_URL pointing at the CF-fronted api.kaeva.app indirection', () => {
+    // Indirection guard: the default MUST be the stable CF-fronted host, not
+    // the raw Supabase project URL — a project move must not brick binaries.
+    expect(DEFAULT_SUBSTRATE_URL).toBe('https://api.kaeva.app');
+    expect(DEFAULT_SUBSTRATE_URL).not.toContain('supabase.co');
   });
 });
