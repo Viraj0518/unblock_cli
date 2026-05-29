@@ -52,7 +52,7 @@ describe('runListen happy path', () => {
     const ctrl = new AbortController();
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     // Deliver a message after a tick so the subscribe iterator has started
@@ -83,7 +83,7 @@ describe('runListen happy path', () => {
 
     const result = await runListen(
       { commsFactory: factory },
-      { timeout: 0.05 }, // 50ms
+      { timeout: 0.05, ephemeral: true }, // 50ms
     );
 
     expect(result.exitReason).toBe('timeout');
@@ -100,7 +100,7 @@ describe('runListen --channel', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { channel: 'announcements' },
+      { channel: 'announcements', ephemeral: true },
     );
 
     const subject = 'unblock.channel.announcements.>';
@@ -133,7 +133,7 @@ describe('runListen --filter', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { filter: 'MATCH_ME', json: true },
+      { filter: 'MATCH_ME', json: true, ephemeral: true },
     );
 
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
@@ -170,7 +170,7 @@ describe('runListen interface', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { subject: 'custom.subject.>' },
+      { subject: 'custom.subject.>', ephemeral: true },
     );
 
     ctrl.abort();
@@ -196,7 +196,7 @@ describe('runListen defensive subscribe (legacy mixed-case chat_name)', () => {
     // beforeEach() seeded chatName='Viraj-Alpha' (mixed-case).
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     // Allow subscription registration (poll, not fixed sleep, to avoid
@@ -226,7 +226,7 @@ describe('runListen defensive subscribe (legacy mixed-case chat_name)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
@@ -255,7 +255,7 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
@@ -305,7 +305,7 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true, noAck: true },
+      { json: true, noAck: true, ephemeral: true },
     );
 
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
@@ -339,7 +339,7 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
@@ -380,7 +380,7 @@ describe('runListen auto-ack (Bug 1: --ack always-timeout)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     const subject = 'unblock.chat.ws.ws-default.to.Viraj-Alpha';
@@ -593,7 +593,7 @@ describe('runListen bare (no replay flag)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
@@ -668,7 +668,7 @@ describe('runListen subject normalization (Bug 2: mixed-case persona)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { json: true },
+      { json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, 'unblock.chat.ws.ws-default.to.viraj-alpha');
@@ -694,7 +694,7 @@ describe('runListen subject normalization (Bug 2: mixed-case persona)', () => {
 
     const listenPromise = runListen(
       { commsFactory: factory, signal: ctrl.signal },
-      { subject: 'custom.Subject.With.MixedCase' },
+      { subject: 'custom.Subject.With.MixedCase', ephemeral: true },
     );
 
     await waitForSubscriber(state, 'custom.Subject.With.MixedCase');
@@ -703,5 +703,34 @@ describe('runListen subject normalization (Bug 2: mixed-case persona)', () => {
 
     ctrl.abort();
     await listenPromise;
+  });
+});
+
+// ─── seamless durable default (issue #9: offline blackout fix) ────────────────
+
+describe('runListen default durability', () => {
+  it('defaults to a durable JetStream consumer with deliver_policy=new', async () => {
+    const { factory, state } = createMockCommsFactory();
+
+    // No replay/durable/ephemeral flags → the new seamless default.
+    await runListen({ commsFactory: factory }, { timeout: 0.05, json: true });
+
+    expect(state.jsConsumeCalls.length).toBe(1);
+    const call = state.jsConsumeCalls[0]!;
+    expect(call.deliverPolicy.kind).toBe('new');
+    expect(call.durableName).toBeDefined();
+    expect(call.durableName).toMatch(/^cli-[a-z0-9]+-[0-9a-f]{10}$/);
+    // No raw subscriber registered — we took the JetStream path, not live-tail.
+    expect(state.subscribers.size).toBe(0);
+  });
+
+  it('--ephemeral opts back into raw live-tail (no JetStream consumer)', async () => {
+    const { factory, state } = createMockCommsFactory();
+
+    await runListen({ commsFactory: factory }, { ephemeral: true, timeout: 0.05 });
+
+    expect(state.jsConsumeCalls.length).toBe(0);
+    // Raw subscribe path registered a live-tail subscriber instead.
+    expect(state.subscribers.size).toBeGreaterThan(0);
   });
 });

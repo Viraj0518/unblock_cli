@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  autoDurableName,
   buildEnvelope,
   chatDmSubject,
   chatFirehoseSubject,
@@ -8,6 +9,33 @@ import {
   normalizeChatName,
   parseEnvelope,
 } from '../../src/comms/wire.js';
+
+describe('autoDurableName (issue #9 seamless durable default)', () => {
+  it('is stable across restarts for the same subject + chatName', () => {
+    const a = autoDurableName('unblock.chat.ws.x.to.alice', 'alice');
+    const b = autoDurableName('unblock.chat.ws.x.to.alice', 'alice');
+    expect(a).toBe(b);
+  });
+
+  it('is case-insensitive on chatName (mirrors normalizeChatName)', () => {
+    expect(autoDurableName('unblock.chat.ws.x.to.alice', 'Alice')).toBe(
+      autoDurableName('unblock.chat.ws.x.to.alice', 'alice'),
+    );
+  });
+
+  it('differs by subject so two listeners do not share a cursor', () => {
+    expect(autoDurableName('s1', 'a')).not.toBe(autoDurableName('s2', 'a'));
+  });
+
+  it('produces a NATS-safe consumer name (no . * > or spaces)', () => {
+    const n = autoDurableName('unblock.chat.ws.x.firehose', 'Viraj-CTO');
+    expect(n).toMatch(/^cli-[a-z0-9]+-[0-9a-f]{10}$/);
+  });
+
+  it('falls back to "anon" when chatName is undefined', () => {
+    expect(autoDurableName('s', undefined)).toMatch(/^cli-anon-/);
+  });
+});
 
 describe('subject builders', () => {
   it('firehose subject is workspace-prefixed', () => {

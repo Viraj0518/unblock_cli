@@ -76,7 +76,7 @@ import type {
 } from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
 import { normalizeChatName } from '../comms/wire.js';
-import { parseSinceToIso } from './listen.js';
+import { resolveDurability } from './listen.js';
 
 /** JetStream stream name configured server-side. Mirrors listen.ts. */
 const UNBLOCK_CHAT_STREAM = 'UNBLOCK_CHAT';
@@ -130,6 +130,11 @@ export interface MonitorOptions extends ConfigOverrides {
   readonly resetDurable?: boolean;
   readonly since?: string;
   readonly replayAll?: boolean;
+  /**
+   * Opt OUT of the seamless durable default and use raw live-tail. Messages
+   * arriving while the monitor is down are DROPPED. Default is durable replay.
+   */
+  readonly ephemeral?: boolean;
   readonly until?: string;
   readonly timeout?: number;
   readonly persistent?: boolean;
@@ -221,7 +226,11 @@ export async function runMonitor(
     workspaceId: cfg.workspaceId,
     chatName: cfg.chatName,
   });
-  const replayMode = pickReplayMode(opts);
+  // Default is now a durable consumer (deliver_policy=new + stable auto name)
+  // so a restart resumes the cursor and replays the gap — no silent blackout
+  // (issue #9). --ephemeral opts back into raw live-tail.
+  const durability = resolveDurability(opts, subject, cfg.chatName);
+  const replayMode = durability.replayMode;
 
   // ── 3. emit-side state ─────────────────────────────────────────────────────
   let emitted = 0;
@@ -301,7 +310,12 @@ export async function runMonitor(
   // Surface the subscribe target on stderr so callers see WHICH subject is
   // on the wire (mirrors listen.ts's diagnostic; gated by UNBLOCK_MONITOR_QUIET).
   if (process.env['UNBLOCK_MONITOR_QUIET'] !== '1') {
-    const mode = replayMode === null ? 'live-tail' : `js-replay(${replayMode.kind})`;
+    const mode =
+      replayMode === null
+        ? 'live-tail(ephemeral)'
+        : durability.durableName !== undefined
+          ? `js-durable(${replayMode.kind}):${durability.durableName}`
+          : `js-replay(${replayMode.kind})`;
     stderr(`[monitor] subscribing to subject: ${subject} mode=${mode}\n`);
   }
 
@@ -319,8 +333,8 @@ export async function runMonitor(
           client,
           subject,
           replayMode,
-          ...(opts.durable !== undefined ? { durableName: opts.durable } : {}),
-          ...(opts.resetDurable === true ? { resetDurable: true } : {}),
+          ...(durability.durableName !== undefined ? { durableName: durability.durableName } : {}),
+          ...(durability.resetDurable === true ? { resetDurable: true } : {}),
           lifecycle,
         },
         onFrame,
@@ -395,20 +409,6 @@ function topicToSubject(
     case 'dms-to-anyone':
       return `unblock.chat.ws.${cfg.workspaceId}.to.>`;
   }
-}
-
-// ─── replay-mode picker (same precedence as listen.ts) ───────────────────────
-
-function pickReplayMode(opts: MonitorOptions): DeliverPolicy | null {
-  if (opts.replayAll === true) return { kind: 'all' };
-  if (opts.since !== undefined && opts.since.trim() !== '') {
-    const startTime = parseSinceToIso(opts.since.trim());
-    return { kind: 'by_start_time', startTime };
-  }
-  if (opts.durable !== undefined && opts.durable.trim() !== '') {
-    return { kind: 'all' };
-  }
-  return null;
 }
 
 // ─── per-event handler: filter → batch → emit + route ────────────────────────

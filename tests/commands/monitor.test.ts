@@ -133,7 +133,7 @@ describe('runMonitor default inbox + --grep', () => {
         stdoutWrite: out.stdoutWrite,
         stderrWrite: out.stderrWrite,
       },
-      { grep: 'NEEDLE', json: true },
+      { grep: 'NEEDLE', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -218,7 +218,7 @@ describe('runMonitor --exec', () => {
         // ChildProcess that satisfies what the exec sink actually uses.
         execSpawn: fakeSpawn as unknown as (cmd: string) => import('node:child_process').ChildProcess,
       },
-      { exec: 'true', json: true },
+      { exec: 'true', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -269,7 +269,7 @@ describe('runMonitor --webhook retries', () => {
         stderrWrite: out.stderrWrite,
         webhookFetch: fakeFetch,
       },
-      { webhook: 'https://example.test/hook', json: true },
+      { webhook: 'https://example.test/hook', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -309,7 +309,7 @@ describe('runMonitor --webhook retries', () => {
         stderrWrite: out.stderrWrite,
         webhookFetch: fakeFetch,
       },
-      { webhook: 'https://example.test/hook', json: true },
+      { webhook: 'https://example.test/hook', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -342,7 +342,7 @@ describe('runMonitor --webhook retries', () => {
         stderrWrite: out.stderrWrite,
         webhookFetch: fakeFetch,
       },
-      { webhook: 'https://example.test/hook', json: true, quietFailures: true },
+      { webhook: 'https://example.test/hook', json: true, quietFailures: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -371,7 +371,7 @@ describe('runMonitor --until', () => {
         stdoutWrite: out.stdoutWrite,
         stderrWrite: out.stderrWrite,
       },
-      { until: 'test-event', json: true, timeout: 5 },
+      { until: 'test-event', json: true, timeout: 5, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -524,7 +524,7 @@ describe('runMonitor coverage guarantee (fatal envelope on failures)', () => {
         stdoutWrite: out.stdoutWrite,
         stderrWrite: out.stderrWrite,
       },
-      { json: true, timeout: 0.5 },
+      { json: true, timeout: 0.5, ephemeral: true },
     );
 
     expect(result.exitReason).toBe('fatal');
@@ -550,7 +550,7 @@ describe('runMonitor --batch', () => {
         stdoutWrite: out.stdoutWrite,
         stderrWrite: out.stderrWrite,
       },
-      { batch: 100, json: true },
+      { batch: 100, json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -588,7 +588,7 @@ describe('runMonitor envelope filters', () => {
         stdoutWrite: out.stdoutWrite,
         stderrWrite: out.stderrWrite,
       },
-      { kind: 'dm', json: true },
+      { kind: 'dm', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -618,7 +618,7 @@ describe('runMonitor envelope filters', () => {
         stdoutWrite: out.stdoutWrite,
         stderrWrite: out.stderrWrite,
       },
-      { from: 'Viraj-Alpha', json: true },
+      { from: 'Viraj-Alpha', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, INBOX_SUBJECT);
@@ -644,7 +644,7 @@ describe('runMonitor --topic preset', () => {
 
     const runPromise = runMonitor(
       { commsFactory: factory, signal: ctrl.signal },
-      { topic: 'firehose', json: true },
+      { topic: 'firehose', json: true, ephemeral: true },
     );
 
     await waitForSubscriber(state, 'unblock.chat.ws.ws-default.firehose');
@@ -660,7 +660,7 @@ describe('runMonitor --topic preset', () => {
 
     const runPromise = runMonitor(
       { commsFactory: factory, signal: ctrl.signal },
-      { topic: 'events' },
+      { topic: 'events', ephemeral: true },
     );
 
     await waitForSubscriber(state, 'unblock.events.>');
@@ -677,5 +677,30 @@ describe('monitor error class exports', () => {
   it('MonitorRegexError + MonitorJetStreamUnavailableError are reachable', () => {
     expect(MonitorRegexError).toBeDefined();
     expect(MonitorJetStreamUnavailableError).toBeDefined();
+  });
+});
+
+// ─── seamless durable default (issue #9: offline blackout fix) ────────────────
+
+describe('runMonitor default durability', () => {
+  it('defaults to a durable JetStream consumer with deliver_policy=new', async () => {
+    const { factory, state } = createMockCommsFactory();
+
+    await runMonitor({ commsFactory: factory }, { timeout: 0.05, json: true });
+
+    expect(state.jsConsumeCalls.length).toBe(1);
+    const call = state.jsConsumeCalls[0]!;
+    expect(call.deliverPolicy.kind).toBe('new');
+    expect(call.durableName).toMatch(/^cli-[a-z0-9]+-[0-9a-f]{10}$/);
+    expect(call.filterSubject).toBe(INBOX_SUBJECT);
+  });
+
+  it('--ephemeral opts back into raw live-tail (no JetStream consumer)', async () => {
+    const { factory, state } = createMockCommsFactory();
+
+    await runMonitor({ commsFactory: factory }, { ephemeral: true, timeout: 0.05, json: true });
+
+    expect(state.jsConsumeCalls.length).toBe(0);
+    expect(state.subscribers.size).toBeGreaterThan(0);
   });
 });
