@@ -66,19 +66,23 @@ import type { PersonaIdentity } from '../auth/persona-store.js';
 
 export const DEFAULT_AUTH_URL = 'https://auth.kaeva.app';
 /**
- * Live substrate default. Points at the CF-fronted `api.kaeva.app` (returns a
- * structured 401 unauthenticated, 200 on `/v1/health`) — NOT the raw Supabase
- * project URL. The indirection is the whole point: baking
- * `wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api` into shipped
- * binaries meant a Supabase project move (per-org tenancy, region change,
- * project re-create) would brick every binary in the field. With api.kaeva.app
- * in front, the substrate can move underneath without a CLI re-release.
+ * Live substrate default = the Supabase `unblock-api` edge function, the
+ * endpoint that ACTUALLY authenticates issued `akey_`/`unb_` keys.
  *
- * Verified 2026-05-29: GET api.kaeva.app/v1/health → 200; POST /v1/query and
- * /v1/remember → structured 401 without a key (route resolves, auth-gated).
- * Override with UNBLOCK_SUBSTRATE_URL for self-hosted / per-org endpoints.
+ * 2026-05-29 REGRESSION + REVERT: this briefly pointed at `https://api.kaeva.app`
+ * for project-move indirection, but that was verified only on `/v1/health` (200),
+ * NOT on an authed round-trip — and api.kaeva.app rejects live persona keys with
+ * 401 AUTH_MISSING (it fronts a different/legacy catalog key store). That broke
+ * `remember`/`query` for every working persona. Reverted to the raw EF, which is
+ * proven (remember→query round-trips at score 1.0 with the persona key).
+ *
+ * FOLLOW-UP (substrate-owner / Viraj): make `api.kaeva.app` proxy to this EF AND
+ * accept the same issued keys; then flip this default back to api.kaeva.app to
+ * regain the move-without-re-release indirection. Until then the raw URL is the
+ * honest, working default. Override anytime with UNBLOCK_SUBSTRATE_URL.
  */
-export const DEFAULT_SUBSTRATE_URL = 'https://api.kaeva.app';
+export const DEFAULT_SUBSTRATE_URL =
+  'https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api';
 
 export function createHttpSubstrateFactory(
   fetcher: typeof globalThis.fetch = globalThis.fetch,
