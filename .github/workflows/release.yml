@@ -80,14 +80,20 @@ jobs:
       # GitHub runners). Linux-x64 / darwin-arm64 / windows-x64 are the
       # default GH-Actions arches as of 2026; arm64 jobs skip the
       # self-test but still produce a binary.
+      #
+      # Expected version is derived from the tag that triggered the run:
+      # v0.1.1 -> "0.1.1". Hardcoding the version here would silently
+      # accept stale binaries on a future tag — Pragmatic rule #38.
       - name: smoke ${{ matrix.target }}
         if: matrix.target == 'linux-x64' || matrix.target == 'darwin-arm64' || matrix.target == 'windows-x64'
         shell: bash
         run: |
+          tag='${{ github.ref_name }}'
+          expected="${tag#v}"
           got=$(./dist-bin/unblock-${{ matrix.target }}${{ matrix.ext }} --version)
-          echo "version output: $got"
-          if [ "$got" != "0.1.0" ]; then
-            echo "::error::expected version 0.1.0, got '$got'"
+          echo "tag=$tag expected=$expected got=$got"
+          if [ "$got" != "$expected" ]; then
+            echo "::error::expected version $expected (from tag $tag), got '$got'"
             exit 1
           fi
 

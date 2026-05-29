@@ -1,6 +1,6 @@
 {
   "name": "@unblock/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone `unblock` command-line binary for UNBLOCK. Distributed via npm. Exposes comms (chat/say/dm/ask), substrate (remember/query), and auth (login/whoami/logout) over NATS + HTTP.",
   "keywords": [
     "unblock",

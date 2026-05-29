@@ -6,4 +6,4 @@
 // All real entry-point behavior lives in `src/main.ts`, which is what the
 // `unblock` bin resolves to.
 
-export const version = '0.1.0';
+export const version = '0.1.1';
