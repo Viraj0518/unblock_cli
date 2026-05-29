@@ -14,6 +14,7 @@
  *           (envelope shape — must match scripts/identity/persona_nats.py).
  */
 
+import { createHash } from 'node:crypto';
 import type { ChatEnvelope } from '../sdk/types.js';
 
 // ─── subject builders (workspace-scoped, mirrors protocol) ───────────────────
@@ -41,6 +42,31 @@ const chatPrefix = (workspaceId: string): string => `unblock.chat.ws.${workspace
  */
 export function normalizeChatName(handle: string): string {
   return handle.toLowerCase();
+}
+
+/**
+ * Derive a STABLE durable JetStream consumer name for the seamless-default
+ * listen/monitor path (issue #9: bare `listen` was live-tail only, so any
+ * disconnect silently dropped every message sent while offline — this cost
+ * multiple personas multi-hour blackouts on 2026-05-28).
+ *
+ * Stability is the whole point: the same (chatName, subject) MUST map to the
+ * same name across process restarts, so the durable's stored cursor resumes
+ * and replays the gap instead of starting fresh. We derive from a sha256 of
+ * the subject (subjects contain `.`/`*`/`>` which are illegal in NATS consumer
+ * names) plus the persona handle for human-readability when listing consumers.
+ *
+ * Server-side, deriving the name is sufficient: a durable created once with
+ * deliver_policy=new resumes from its ack-floor on every later `consume` with
+ * the same name (see nats-client.ts `ensureConsumer`), so first launch starts
+ * "from now" (no 30-day dump) and every restart replays only the missed gap.
+ */
+export function autoDurableName(subject: string, chatName: string | undefined): string {
+  const handle = (chatName !== undefined ? normalizeChatName(chatName) : 'anon')
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 24) || 'anon';
+  const hash = createHash('sha256').update(subject).digest('hex').slice(0, 10);
+  return `cli-${handle}-${hash}`;
 }
 
 export function chatFirehoseSubject(workspaceId: string): string {

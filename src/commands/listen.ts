@@ -48,7 +48,7 @@ import type {
   Subscription,
 } from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
-import { normalizeChatName } from '../comms/wire.js';
+import { autoDurableName, normalizeChatName } from '../comms/wire.js';
 
 /** JetStream stream name configured server-side. */
 const UNBLOCK_CHAT_STREAM = 'UNBLOCK_CHAT';
@@ -96,6 +96,12 @@ export interface ListenOptions extends ConfigOverrides {
    * `durable`; useful when intentionally changing subject or replay config.
    */
   readonly resetDurable?: boolean;
+  /**
+   * Opt OUT of the seamless durable default and use raw live-tail (NATS core
+   * pub/sub). Lower latency, but messages sent while offline are DROPPED.
+   * Only set this when you explicitly do not want gap-replay across restarts.
+   */
+  readonly ephemeral?: boolean;
 }
 
 export interface ListenResult {
@@ -131,9 +137,13 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
     ...(cfg.credsPath !== undefined ? { credsPath: cfg.credsPath } : {}),
   });
 
-  // Decide replay vs live-tail BEFORE setting up subscribers. Any replay flag
-  // → JetStream consume; otherwise raw subscribe (unchanged behaviour).
-  const replayMode = pickReplayMode(opts);
+  // Decide durability BEFORE setting up subscribers. The DEFAULT is now a
+  // durable JetStream consumer (deliver_policy=new + auto-derived stable name)
+  // so a restart resumes from the cursor and replays the gap — no more silent
+  // offline blackouts (issue #9). `--ephemeral` opts back into raw live-tail;
+  // --since/--replay-all/--durable keep their explicit semantics.
+  const durability = resolveDurability(opts, subject, cfg.chatName);
+  const replayMode = durability.replayMode;
 
   let received = 0;
   let exitReason: 'timeout' | 'signal' | 'aborted' = 'signal';
@@ -207,7 +217,12 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
   // Suppress with UNBLOCK_LISTEN_QUIET=1 for scripting use-cases that pipe
   // stderr too.
   if (process.env['UNBLOCK_LISTEN_QUIET'] !== '1') {
-    const mode = replayMode === null ? 'live-tail' : `js-replay(${replayMode.kind})`;
+    const mode =
+      replayMode === null
+        ? 'live-tail(ephemeral)'
+        : durability.durableName !== undefined
+          ? `js-durable(${replayMode.kind}):${durability.durableName}`
+          : `js-replay(${replayMode.kind})`;
     process.stderr.write(`[listen] subscribing to subject: ${subject} mode=${mode}\n`);
   }
 
@@ -216,8 +231,8 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
       client,
       subject,
       replayMode,
-      ...(opts.durable !== undefined ? { durableName: opts.durable } : {}),
-      ...(opts.resetDurable === true ? { resetDurable: true } : {}),
+      ...(durability.durableName !== undefined ? { durableName: durability.durableName } : {}),
+      ...(durability.resetDurable === true ? { resetDurable: true } : {}),
       ...(opts.timeout !== undefined ? { timeoutSec: opts.timeout } : {}),
       ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
       handleFrame,
@@ -345,22 +360,62 @@ function resolveSubject(
   return `unblock.chat.ws.${cfg.workspaceId}.to.${chatName}`;
 }
 
+/** Minimal option surface shared by listen + monitor for durability resolution. */
+export interface DurabilityOpts {
+  readonly ephemeral?: boolean;
+  readonly replayAll?: boolean;
+  readonly since?: string;
+  readonly durable?: string;
+  readonly resetDurable?: boolean;
+}
+
+export interface ResolvedDurability {
+  /** null → raw live-tail (no JetStream). */
+  readonly replayMode: DeliverPolicy | null;
+  readonly durableName?: string;
+  readonly resetDurable?: boolean;
+}
+
 /**
- * Pick the JetStream deliver-policy from the user's replay flags. Returns
- * null when no replay flag was given (caller uses raw subscribe instead).
+ * Resolve the effective durability for a listen/monitor session. Shared by
+ * both commands so their behaviour can't drift (DRY).
  *
- * Precedence: --replay-all > --since > --durable.
+ * Precedence:
+ *   --ephemeral    → raw live-tail (drops messages sent while offline)
+ *   --replay-all   → JS replay all 30d retention   (ephemeral unless --durable)
+ *   --since        → JS replay from a point in time (ephemeral unless --durable)
+ *   --durable NAME → named durable, replay-all on first creation
+ *   (default)      → SEAMLESS durable: deliver_policy=new + stable auto name,
+ *                    so a restart resumes the cursor and replays only the gap.
+ *                    This is the fix for issue #9 (offline blackout): bare
+ *                    `listen`/`monitor` used to be live-tail and silently
+ *                    dropped everything sent while disconnected.
  */
-function pickReplayMode(opts: ListenOptions): DeliverPolicy | null {
-  if (opts.replayAll === true) return { kind: 'all' };
+export function resolveDurability(
+  opts: DurabilityOpts,
+  subject: string,
+  chatName: string | undefined,
+): ResolvedDurability {
+  if (opts.ephemeral === true) return { replayMode: null };
+
+  const durableName =
+    opts.durable !== undefined && opts.durable.trim() !== '' ? opts.durable.trim() : undefined;
+  const durableBits =
+    durableName !== undefined
+      ? { durableName, ...(opts.resetDurable === true ? { resetDurable: true } : {}) }
+      : {};
+
+  if (opts.replayAll === true) return { replayMode: { kind: 'all' }, ...durableBits };
   if (opts.since !== undefined && opts.since.trim() !== '') {
-    const startTime = parseSinceToIso(opts.since.trim());
-    return { kind: 'by_start_time', startTime };
+    return {
+      replayMode: { kind: 'by_start_time', startTime: parseSinceToIso(opts.since.trim()) },
+      ...durableBits,
+    };
   }
-  if (opts.durable !== undefined && opts.durable.trim() !== '') {
-    return { kind: 'all' };
-  }
-  return null;
+  if (durableName !== undefined) return { replayMode: { kind: 'all' }, ...durableBits };
+
+  // Default: seamless durable consumer.
+  return { replayMode: { kind: 'new' }, durableName: autoDurableName(subject, chatName) };
 }
 
 /**
