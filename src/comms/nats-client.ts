@@ -3,10 +3,20 @@
  * interface. Production code constructs this via `createNatsFactory()`;
  * tests inject a fake CommsFactory directly.
  *
- * The `nats` package is imported dynamically so that:
- *   - tests can run without the dep installed (the fake never reaches here);
- *   - the package can be made optional in package.json (consumers who only
- *     use `unblock remember` / `query` won't pull NATS).
+ * `nats` is a STATIC top-level import (not a dynamic `import('nats')`).
+ * History: every v0.1.1 release binary crashed on say/chat/dm/listen/monitor
+ * with "Cannot find package 'nats'" / "A dynamic import callback was not
+ * specified." @yao-pkg/pkg cannot trace a bare-specifier dynamic import into
+ * the snapshot, and a `pkg.assets`/`pkg.scripts` config alone does NOT fix it
+ * (verified 2026-05-29: the binary still threw "A dynamic import callback was
+ * not specified."). A static import puts `nats` in the static module graph
+ * that pkg DOES trace, and `nats` is now a hard `dependency` (not
+ * optionalDependencies) so it is always present at build + install time.
+ *
+ * Tests never construct the real factory's connect() against a live broker —
+ * they inject a fake CommsFactory, or exercise the JetStream adapter via
+ * `createNatsJetStreamForTest` with a fake connection — so a static import of
+ * an always-installed dep costs them nothing.
  *
  * Refuses to connect to localhost without `UNBLOCK_ALLOW_LOCAL_BROKER=1`
  * (per parent feedback_crash_early_on_default_broker_url.md — 3F-1 family
@@ -14,6 +24,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { connect as natsConnect, credsAuthenticator } from 'nats';
 import type {
   CommsClient,
   CommsFactory,
@@ -47,55 +58,127 @@ export function assertSecureBrokerUrl(url: string, opts: AssertSecureOptions = {
 }
 
 /**
- * Construct a NATS-backed CommsFactory. Imports `nats` lazily so the
- * dependency is only required when this factory is actually instantiated.
+ * Split a broker URL spec into a server list. The CLI accepts a single URL
+ * (`tls://nats.kaeva.app:51937`) or a comma-separated fallback list
+ * (`tls://a:51937,tls://b:51937`) so a shipped binary can ride out a single
+ * port/host change without a re-release. Order is preserved — the NATS client
+ * tries them left-to-right and keeps the survivor for reconnects.
+ *
+ * Exported for unit testing the parse + secure-URL fan-out.
+ */
+export function parseBrokerServers(urlSpec: string): string[] {
+  const servers = urlSpec
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  if (servers.length === 0) {
+    throw new Error('broker URL is empty — set UNBLOCK_NATS_URL or run `unblock login`');
+  }
+  return servers;
+}
+
+/**
+ * Reconnect backoff with jitter, in ms. Keeps a herd of reconnecting CLIs
+ * from hammering the broker in lockstep after a broker bounce.
+ */
+function reconnectTimeWaitJitter(): number {
+  const baseMs = 2000;
+  const jitterMs = Math.floor(Math.random() * 1000);
+  return baseMs + jitterMs;
+}
+
+/**
+ * Construct a NATS-backed CommsFactory. Imports `nats` lazily so tests can
+ * run without reaching this path (production binaries bundle `nats` via the
+ * `pkg.assets`/`pkg.scripts` config in package.json — see PR for the
+ * "Cannot find package 'nats'" release-binary fix).
  */
 export function createNatsFactory(): CommsFactory {
   return {
     async connect(options): Promise<CommsClient> {
-      assertSecureBrokerUrl(options.url);
-      // Dynamic import keeps `nats` out of the eager require graph (tests
-      // never reach here, and the package becomes installation-optional).
-      // We validate the exported shape at runtime rather than casting blindly
-      // (per AGENTS.md rule 4 and feedback_honest_typescript_fixes).
-      const nats = await loadNatsModule();
+      // Accept a comma-separated fallback list. Validate EVERY candidate
+      // (not just the first) so a localhost fallback can't sneak in.
+      const servers = parseBrokerServers(options.url);
+      for (const s of servers) assertSecureBrokerUrl(s);
 
       const connectOpts: Record<string, unknown> = {
-        servers: options.url,
+        servers,
         timeout: 5000,
         name: options.name ?? `unblock-cli-${process.pid}`,
+        // Multi-endpoint resilience: once connected, keep retrying forever
+        // with jittered backoff so a broker bounce mid-session reconnects
+        // transparently across the fallback server list.
+        reconnect: true,
+        maxReconnectAttempts: -1,
+        reconnectTimeWait: reconnectTimeWaitJitter(),
+        // Only long-lived consumers (listen/monitor/chat) block the FIRST
+        // connect forever. One-shot verbs leave this false so an unreachable
+        // broker rejects the initial connect → BrokerUnreachableError (one
+        // clean line) instead of hanging indefinitely. Reconnect (above)
+        // still applies once a first connection succeeds.
+        waitOnFirstConnect: options.waitOnFirstConnect === true,
       };
 
       if (options.credsPath !== undefined) {
         const buf = await readFile(options.credsPath);
         const credsBytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-        connectOpts['authenticator'] = nats.credsAuthenticator(credsBytes);
+        connectOpts['authenticator'] = credsAuthenticator(credsBytes);
       }
 
-      const conn = await nats.connect(connectOpts);
-      return wrapConnection(conn);
+      try {
+        // `natsConnect` returns the `nats` package's own NatsConnection. We
+        // narrow it to our minimal structural interface via a runtime shape
+        // check (no blind cast — per AGENTS.md rule 4 / honest-TS tenet).
+        const conn = asNatsConnection(await natsConnect(connectOpts));
+        return wrapConnection(conn);
+      } catch (err) {
+        // One clear line instead of a raw NATS stack. Point the operator at
+        // the diagnostic verb rather than dumping connect internals.
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new BrokerUnreachableError(servers, detail);
+      }
     },
   };
 }
 
-// ─── internal: dynamic-import loader with runtime shape check ────────────────
-
-interface NatsModule {
-  connect: (opts: Record<string, unknown>) => Promise<NatsConnection>;
-  credsAuthenticator: (creds: Uint8Array) => unknown;
+/**
+ * Thrown when the NATS client cannot reach any candidate broker. Carries the
+ * tried server list + the underlying cause for `--debug`, but its `message`
+ * is a single operator-facing line (no stack soup at the CLI surface).
+ */
+export class BrokerUnreachableError extends Error {
+  constructor(
+    readonly servers: readonly string[],
+    readonly detail: string,
+  ) {
+    super(
+      `broker unreachable at ${servers.join(', ')} — run unblock health --component broker`,
+    );
+    this.name = 'BrokerUnreachableError';
+  }
 }
 
-async function loadNatsModule(): Promise<NatsModule> {
-  const mod: unknown = await import('nats');
-  if (
-    typeof mod === 'object' &&
-    mod !== null &&
-    typeof (mod as { connect?: unknown }).connect === 'function' &&
-    typeof (mod as { credsAuthenticator?: unknown }).credsAuthenticator === 'function'
-  ) {
-    return mod as NatsModule;
+// ─── internal: runtime narrow the `nats` connection to our interface ─────────
+
+/**
+ * Narrow the `nats` package's NatsConnection (a superset with many methods we
+ * don't use) to our minimal structural `NatsConnection`. We verify the exact
+ * methods we call exist at runtime, then narrow — no blind `as unknown as`
+ * cast (per AGENTS.md rule 4 / feedback_honest_typescript_fixes). If the
+ * `nats` API ever drops one of these, this throws a clear error here instead
+ * of a `TypeError: x is not a function` deep in the consume loop.
+ */
+function asNatsConnection(conn: unknown): NatsConnection {
+  if (typeof conn !== 'object' || conn === null) {
+    throw new Error(`nats.connect returned a non-object (${typeof conn})`);
   }
-  throw new Error('nats package present but missing connect / credsAuthenticator exports');
+  const c = conn as Record<string, unknown>;
+  for (const m of ['publish', 'subscribe', 'flush', 'close', 'drain', 'jetstreamManager', 'jetstream']) {
+    if (typeof c[m] !== 'function') {
+      throw new Error(`nats connection missing expected method "${m}"`);
+    }
+  }
+  return conn as NatsConnection;
 }
 
 // ─── internal: adapt the `nats` package to our CommsClient interface ─────────

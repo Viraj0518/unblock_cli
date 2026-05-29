@@ -123,9 +123,24 @@ export interface CommsClient {
 /** Factory that opens a connection. Implementations are responsible for auth. */
 export interface CommsFactory {
   connect(options: {
+    /**
+     * Broker URL, or a comma-separated fallback list
+     * (`tls://a:51937,tls://b:51937`). The client tries them in order and
+     * keeps the survivor for reconnects.
+     */
     readonly url: string;
     readonly credsPath?: string;
     readonly name?: string;
+    /**
+     * When true, block the FIRST connect and keep retrying forever instead
+     * of rejecting on an unreachable broker. Long-lived consumers (`listen`,
+     * `monitor`, `chat`) set this so a broker bounce during startup doesn't
+     * hard-fail the session. One-shot verbs (`say`, `dm`, `ask`, `send`,
+     * `health`) leave it false/undefined so a dead broker surfaces the
+     * `broker unreachable …` line immediately instead of hanging. Defaults
+     * to false.
+     */
+    readonly waitOnFirstConnect?: boolean;
   }): Promise<CommsClient>;
 }
 

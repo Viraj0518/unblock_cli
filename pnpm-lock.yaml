@@ -14,6 +14,9 @@ importers:
       commander:
         specifier: ^12.1.0
         version: 12.1.0
+      nats:
+        specifier: ^2.28.0
+        version: 2.29.3
       prompts:
         specifier: ^2.4.0
         version: 2.4.2
@@ -45,10 +48,6 @@ importers:
       vitest:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@22.19.19)
-    optionalDependencies:
-      nats:
-        specifier: ^2.28.0
-        version: 2.29.3
 
 packages:
 
@@ -2724,14 +2723,12 @@ snapshots:
   nats@2.29.3:
     dependencies:
       nkeys.js: 1.1.0
-    optional: true
 
   natural-compare@1.4.0: {}
 
   nkeys.js@1.1.0:
     dependencies:
       tweetnacl: 1.0.3
-    optional: true
 
   node-abi@3.92.0:
     dependencies:
@@ -3051,8 +3048,7 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  tweetnacl@1.0.3:
-    optional: true
+  tweetnacl@1.0.3: {}
 
   type-check@0.4.0:
     dependencies:
