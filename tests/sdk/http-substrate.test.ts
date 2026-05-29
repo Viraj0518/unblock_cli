@@ -403,10 +403,14 @@ describe('http-substrate remember/query', () => {
     expect(calls[0]?.url).toBe('https://only-auth.example/v1/remember');
   });
 
-  it('exposes DEFAULT_SUBSTRATE_URL pointing at the CF-fronted api.kaeva.app indirection', () => {
-    // Indirection guard: the default MUST be the stable CF-fronted host, not
-    // the raw Supabase project URL — a project move must not brick binaries.
-    expect(DEFAULT_SUBSTRATE_URL).toBe('https://api.kaeva.app');
-    expect(DEFAULT_SUBSTRATE_URL).not.toContain('supabase.co');
+  it('exposes DEFAULT_SUBSTRATE_URL pointing at the authenticating unblock-api EF', () => {
+    // The default MUST be an endpoint that actually authenticates issued keys.
+    // api.kaeva.app was tried for project-move indirection but rejects live
+    // persona keys with 401 (verified 2026-05-29), so the honest working default
+    // is the raw EF. Re-point to api.kaeva.app only once it accepts issued keys
+    // (substrate-owner follow-up); flip this assertion back then.
+    expect(DEFAULT_SUBSTRATE_URL).toBe(
+      'https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api',
+    );
   });
 });
