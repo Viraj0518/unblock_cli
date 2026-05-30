@@ -34,6 +34,7 @@ import { runInvite, type InviteRole } from './commands/invite.js';
 import { runListen } from './commands/listen.js';
 import { runMonitor, type MonitorKind, type MonitorTopic } from './commands/monitor.js';
 import { runSend } from './commands/send.js';
+import { formatDispatch, runDispatch } from './commands/dispatch.js';
 import { runTrace } from './commands/trace.js';
 import { runHealth, type ComponentName } from './commands/health.js';
 import { formatSubjects, runSubjects } from './commands/subjects.js';
@@ -583,6 +584,105 @@ export function buildProgram(): Command {
         process.exitCode = result.outcome === 'timeout' ? 2 : 0;
       });
     });
+
+  // ─── dispatch (auto-dispatch coordinator client — the org-brain reflex arc) ──
+  program
+    .command('dispatch <payload_kind> <recipient_role> <content>')
+    .description(
+      'Publish an ASK to the auto-dispatch coordinator and block until its ' +
+        'COMMITTED / REJECT / FYI reply (or --timeout). This is how a blocked ' +
+        'agent gets the org-brain to dispatch help WITHOUT a human relay: the ASK ' +
+        'lands on unblock.coord.dispatch.<asker>.<msgId>, the coordinator routes + ' +
+        'spawns the right next agent, and the reply flows back on ' +
+        'unblock.coord.replies.<asker>.<msgId>. asker = the loaded persona chat_name. ' +
+        'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
+        'Exit 0 = COMMITTED/FYI, 1 = REJECT, 2 = timeout.',
+    )
+    .option('--intent <intent>', 'ASK (default) | DELEGATE')
+    .option('--args <json>', 'strategy-specific args as a JSON object')
+    .option('--timeout <sec>', 'seconds to wait for the reply (default 120)', (v) =>
+      Number.parseFloat(v),
+    )
+    .option('--json', 'machine-readable JSON output', false)
+    .option('--name <handle>', 'display name override')
+    .option('--nats-url <url>', 'broker URL override')
+    .option('--persona <name>', 'use ~/.unblock-personas/<name>/ instead of ~/.unblock/')
+    .action(
+      async (
+        payloadKind: string,
+        recipientRole: string,
+        content: string,
+        opts: Record<string, unknown>,
+      ) => {
+        try {
+          await withPersonaFlag(opts['persona'], async () => {
+            const intentRaw = opts['intent'];
+            let delegate = false;
+            if (typeof intentRaw === 'string') {
+              const upper = intentRaw.toUpperCase();
+              if (upper !== 'ASK' && upper !== 'DELEGATE') {
+                process.stderr.write(
+                  `error: --intent must be ASK | DELEGATE (got "${intentRaw}")\n`,
+                );
+                process.exitCode = 1;
+                return;
+              }
+              delegate = upper === 'DELEGATE';
+            }
+
+            let args: Record<string, unknown> | undefined;
+            if (typeof opts['args'] === 'string') {
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(opts['args']);
+              } catch {
+                process.stderr.write('error: --args must be valid JSON\n');
+                process.exitCode = 1;
+                return;
+              }
+              if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                process.stderr.write('error: --args must be a JSON object\n');
+                process.exitCode = 1;
+                return;
+              }
+              args = parsed as Record<string, unknown>;
+            }
+
+            const result = await runDispatch(
+              { commsFactory: createNatsFactory() },
+              {
+                ...configOverrides(opts),
+                payloadKind,
+                recipientRole,
+                content,
+                delegate,
+                ...(args !== undefined ? { args } : {}),
+                ...(typeof opts['timeout'] === 'number' ? { timeout: opts['timeout'] } : {}),
+                json: opts['json'] === true,
+              },
+            );
+            if (opts['json'] === true) {
+              process.stdout.write(`${JSON.stringify({
+                msg_id: result.msgId,
+                asker: result.asker,
+                outcome: result.outcome,
+                kind: result.reply?.kind ?? null,
+                strategy: result.reply?.strategy ?? null,
+                body: result.reply?.body ?? null,
+                payload_kind: result.reply?.payload_kind ?? null,
+                ts: result.reply?.ts ?? null,
+              }, null, 2)}\n`);
+            } else {
+              process.stdout.write(formatDispatch(result));
+            }
+            process.exitCode = result.exitCode;
+          });
+        } catch (err) {
+          process.stderr.write(`${errMsg(err)}\n`);
+          process.exitCode = 1;
+        }
+      },
+    );
 
   // ─── auth ─────────────────────────────────────────────────────────────────
   program
