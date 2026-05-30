@@ -76,7 +76,7 @@ import type {
 } from '../sdk/types.js';
 import { resolveConfig, type ConfigOverrides } from '../config.js';
 import { normalizeChatName } from '../comms/wire.js';
-import { resolveDurability } from './listen.js';
+import { isStreamNotFoundError, resolveDurability } from './listen.js';
 
 /** JetStream stream name configured server-side. Mirrors listen.ts. */
 const UNBLOCK_CHAT_STREAM = 'UNBLOCK_CHAT';
@@ -348,8 +348,33 @@ export async function runMonitor(
       );
     }
   } catch (err) {
-    emitFatal('source_error', err instanceof Error ? err.message : String(err));
-    exitReason = 'fatal';
+    // Graceful degrade: the seamless-default durable consumer needs the
+    // server-side UNBLOCK_CHAT stream. If it's missing and the user didn't
+    // explicitly request replay (--since/--durable/--replay-all), fall back to
+    // core-NATS live-tail rather than dying. `client` is still open (the JS
+    // source doesn't close it on error), so reuse it.
+    if (durability.auto === true && isStreamNotFoundError(err)) {
+      if (process.env['UNBLOCK_MONITOR_QUIET'] !== '1') {
+        stderr(
+          `[monitor] WARN: durable replay unavailable — the UNBLOCK_CHAT JetStream ` +
+          `stream is not provisioned on the broker. Falling back to live-tail; events ` +
+          `emitted while this monitor is offline will be missed until the stream is ` +
+          `restored (ops: scripts/nats/apply-streams.mjs --only UNBLOCK_CHAT).\n`,
+        );
+      }
+      try {
+        exitReason = await runRawSubscribeSource({ client, subject, lifecycle }, onFrame, ctx);
+      } catch (fallbackErr) {
+        emitFatal(
+          'source_error',
+          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+        );
+        exitReason = 'fatal';
+      }
+    } else {
+      emitFatal('source_error', err instanceof Error ? err.message : String(err));
+      exitReason = 'fatal';
+    }
   }
 
   // ── 8. drain any pending batched emit ──────────────────────────────────────
@@ -980,6 +1005,10 @@ async function runJetStreamSource(
       }
     } catch (err) {
       if (!abortCtrl.signal.aborted) {
+        // A missing server-side stream is recoverable by the caller (the
+        // auto-durable default degrades to live-tail). Rethrow so runMonitor's
+        // source try/catch can decide, instead of emitting a fatal here.
+        if (isStreamNotFoundError(err)) throw err;
         ctx.emitFatal(
           'js_iterator_error',
           err instanceof Error ? err.message : String(err),
