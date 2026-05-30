@@ -4,8 +4,8 @@
  * Wire: NATS publish on `unblock.chat.ws.<workspaceId>.to.<recipient>`
  *       AND mirrored to firehose so watching humans see DM traffic.
  *
- * The mirror-to-firehose behavior matches v02-mig's `cmdDm` — DMs are
- * observable by humans on `unblock chat` REPLs, never private.
+ * The mirror-to-firehose behavior means DMs are observable by humans on
+ * `unblock chat` REPLs, never private.
  */
 
 import type { CommsFactory } from '../sdk/types.js';

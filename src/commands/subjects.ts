@@ -56,10 +56,10 @@ export async function runSubjects(): Promise<SubjectsResult> {
   }
 
   // env.chatName is the authoritative source for subject routing — it carries
-  // the canonical lowercase wire name written by `unblock login` (per ADR-147,
-  // the JWT `name` claim now holds the agent DID, not the chat name; deferring
-  // to `claims.name` here would make the dm_inbox_subject diverge from what
-  // `unblock listen` subscribes to). Tracked as kink #145/K22.
+  // the canonical lowercase wire name written by `unblock login`. The JWT
+  // `name` claim holds the agent DID, not the chat name; deferring to
+  // `claims.name` here would make the dm_inbox_subject diverge from what
+  // `unblock listen` subscribes to.
   const summary = buildSubjectSummary({
     workspaceId: env.workspaceId,
     chatName: env.chatName,

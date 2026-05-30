@@ -1,7 +1,7 @@
-# YC Demo Smoke — Results (cross-AI-session memory persistence)
+# Demo Smoke — Results (cross-AI-session memory persistence)
 
-> Lock-in Test (LT): the YC demo's core loop — `remember` in one AI session,
-> `query`/recall it from a **fresh** session — proven against **PROD**.
+> The demo's core loop — `remember` in one AI session, `query`/recall it from
+> a **fresh** session — proven against the live deployment.
 
 ## TL;DR
 
@@ -11,18 +11,18 @@ Every prior test in the fleet is mocked; this hits the live Supabase
 
 ## What was run
 
-- Driver: the live `unblock` 0.1.0 binary (no reimplementation).
-- Persona: `viraj-cto` (`did:key:z6Mkh…JY8dC`), workspace/org `unblock`.
-- Substrate target: `https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api`
+- Driver: the live `unblock` binary (no reimplementation).
+- Persona: an enrolled `did:key` persona, workspace/org `unblock`.
+- Substrate target: the deployed `unblock-api` edge function
   (`/v1/remember` + `/v1/query`, `X-API-Key` auth — **not** the NATS broker,
   which was down at test time and is irrelevant to this loop).
 - Date: 2026-05-28.
 
-## Evidence (actual, from `scripts/yc-demo-smoke.sh`)
+## Evidence (actual, from `scripts/demo-smoke.sh`)
 
 | step | result |
 |------|--------|
-| `whoami` | OK — `viraj-cto`, jwt valid to 2026-06-27 |
+| `whoami` | OK — enrolled persona, jwt valid to 2026-06-27 |
 | `remember` (write) | block `blk_402414085c3a4401030766ca1b1c9b5a`, **3,635 ms** |
 | `query` in a **fresh process** (= new session) | **23,777 ms**, top hit = the written block |
 | assert top-hit id == written id | OK |
@@ -39,7 +39,7 @@ script run. Manual warm re-query of the same marker returned in **8.6 s**.
 - **PROVEN — same-key cross-SESSION recall.** Write in process A, read in a
   separate later process B. This is exactly the demo claim: "remember in
   session A, recall in session B / on another machine." The two processes
-  share nothing in memory; the only thing connecting them is the org-brain.
+  share nothing in memory; the only thing connecting them is the substrate.
 - **NOT proven here — cross-USER recall.** persona X reading persona Y's
   *private* block requires the sharing path (`unblock share <blk> <recipient>`)
   or two API keys bound to one user/bubble scope. The smoke script exercises
@@ -49,7 +49,7 @@ script run. Manual warm re-query of the same marker returned in **8.6 s**.
 ## Honesty notes / risks for the demo
 
 - **Query latency is high and variable** (cold 24–44 s, warm ~9 s). For a live
-  YC demo this is a UX risk — pre-warm the path or have a recorded fallback.
+  demo this is a UX risk — pre-warm the path or have a recorded fallback.
   The write path is fast (~3.6 s).
 - The loop depends on the substrate EF + Supabase being up. The NATS broker
   being down does **not** affect remember/query.
@@ -57,8 +57,8 @@ script run. Manual warm re-query of the same marker returned in **8.6 s**.
 ## Re-run
 
 ```bash
-UNBLOCK_HOME=/path/to/persona ./scripts/yc-demo-smoke.sh        # PASS -> exit 0
-SHARE_RECIPIENT=some-persona UNBLOCK_HOME=… ./scripts/yc-demo-smoke.sh  # also test share
+UNBLOCK_HOME=/path/to/persona ./scripts/demo-smoke.sh        # PASS -> exit 0
+SHARE_RECIPIENT=some-persona UNBLOCK_HOME=… ./scripts/demo-smoke.sh  # also test share
 ```
 
 Markers are unique per run, so it is safe to run repeatedly.

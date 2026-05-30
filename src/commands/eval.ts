@@ -9,9 +9,9 @@
  * into substrate's `scripts/eval/run-bench.mjs` via Node `child_process`.
  * That keeps the CLI's bundle small + lets the bench evolve independently.
  *
- * Per LT-6 in project_unblock_yc_lockin_tests_20260524: the goal is honest
- * baseline numbers YC reviewers can rerun on a fresh machine. The CLI
- * surface is the supported entry point; the script is the implementation.
+ * The goal is honest baseline numbers anyone can rerun on a fresh machine.
+ * The CLI surface is the supported entry point; the script is the
+ * implementation.
  */
 
 import { spawn } from 'node:child_process';

@@ -12,7 +12,7 @@
  *   5. --write (default): write ~/.unblock/comms-v3.{creds,env} with LF endings.
  *      --print: dump JSON to stdout, skip writes.
  *
- * ADR-144: max TTL = 30 days (2_592_000 seconds).
+ * Max TTL = 30 days (2_592_000 seconds).
  * Known landmine: CRLF line endings break nkeys — always write LF (enforced here).
  *
  * Auth-issuer endpoints consumed:
@@ -50,7 +50,7 @@ export interface MintOptions extends ConfigOverrides {
   readonly persona?: string;
   /**
    * TTL string: "30d", "1h", "2592000" (raw seconds). Defaults to "30d".
-   * Max = 30d per ADR-144.
+   * Max = 30d.
    */
   readonly ttl?: string;
   /**
@@ -79,7 +79,7 @@ export interface MintResult {
 
 // ─── implementation ──────────────────────────────────────────────────────────
 
-const MAX_TTL_SECONDS = 2_592_000; // 30 days — ADR-144 hard cap
+const MAX_TTL_SECONDS = 2_592_000; // 30 days — hard cap
 const MISSING_MACAROON_ROOT_SECRET_HINT =
   'MACAROON_ROOT_SECRET env var is not set. Export it and retry: `export MACAROON_ROOT_SECRET=<secret>; unblock mint ...`.';
 

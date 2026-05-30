@@ -7,8 +7,8 @@
  *   1. No imports from any path containing `_shared/`
  *   2. No imports from `@unblock/<other-pkg>` deep paths (root `@unblock/protocol` OK)
  *   3. No `process.env.X ?? <default>` in src/ (config is required, not silent)
- *   4. No `as never` / `as unknown as` blind casts (per feedback_honest_typescript_fixes)
- *   5. No `@ts-ignore` (per same)
+ *   4. No `as never` / `as unknown as` blind casts (honest types only)
+ *   5. No `@ts-ignore` (same)
  *   6. No bare `Buffer.` usage without `import { Buffer } from "node:buffer"`
  *
  * The script is plain Node (no deps) so it can run before `pnpm install`

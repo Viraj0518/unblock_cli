@@ -15,7 +15,8 @@
  * Idempotent on identity: if a persona identity already exists locally we
  * reuse it (re-enroll with the same DID — server may reject or upsert).
  *
- * Refs: parent CLAUDE.md §"One-time bootstrap per persona", ADR-116 Wave 3F-2.
+ * Bootstraps a persona: mints a `did:key`, enrolls against the auth-issuer,
+ * and writes the local credential files.
  */
 
 import {

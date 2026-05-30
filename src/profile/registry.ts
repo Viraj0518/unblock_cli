@@ -1,11 +1,10 @@
 /**
  * Profile registry — `~/.unblock/profiles.json` + per-profile dirs.
  *
- * Backs the `unblock profile {add|list|use|rm}` subcommands (Wave-1 tracer of
- * `docs/plans/PORT-PLAN-cli-from-010.md`). One workstation may host several
- * personas (Viraj-Alpha + Viraj-Beta + Codex + future) — each needs its own
- * api key + checkpoint + (eventually) catalog-api endpoint without overwriting
- * the others' state.
+ * Backs the `unblock profile {add|list|use|rm}` subcommands. One workstation
+ * may host several personas (e.g. multiple agents) — each needs its own api
+ * key + checkpoint + (eventually) catalog-api endpoint without overwriting the
+ * others' state.
  *
  * On-disk layout:
  *

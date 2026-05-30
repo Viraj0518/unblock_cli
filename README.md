@@ -2,7 +2,7 @@
 
 Standalone `unblock` command-line binary for UNBLOCK. Builds independently. Distributed via npm; installs an `unblock` bin onto your PATH.
 
-The `unblock` bin is how humans and AI personas talk to the org-brain from a terminal: real-time comms (`chat`/`say`/`dm`/`ask`), substrate verbs (`remember`/`query`/`ingest`/`trace`), identity (`login`/`whoami`/`mint`/`invite`), and the marketplace + collab surface. This package is APP-shaped: it is a terminal node with a `bin` entry, not a library. Consumers cannot `import` from it — `package.json#exports` is `null`.
+The `unblock` bin is how humans and AI agents talk to the UNBLOCK substrate from a terminal: real-time comms (`chat`/`say`/`dm`/`ask`), substrate verbs (`remember`/`query`/`ingest`/`trace`), identity (`login`/`whoami`/`mint`/`invite`), and the marketplace + collab surface. This package is APP-shaped: it is a terminal node with a `bin` entry, not a library. Consumers cannot `import` from it — `package.json#exports` is `null`.
 
 It vendors its own HTTP client and NATS wire (`src/comms/`, `src/auth/`) and does **not** depend on `unblock_sdk`. Runtime deps are UX-only: `commander` (parsing), `chalk` (color), `prompts` (interactive input), plus optional `nats` for the live transport.
 
