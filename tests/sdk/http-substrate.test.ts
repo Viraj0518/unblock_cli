@@ -29,9 +29,9 @@ function makeFetch(responses: ReadonlyArray<Response | (() => Response)>): {
 
 describe('http-substrate enroll', () => {
   it('posts to /v1/identity/enroll w/ X-Invite-Code header + {human_did, ed25519_pubkey_hex, agent_name} body (live server shape)', async () => {
-    // Server-of-truth: unblock-v02-mig/services/auth-issuer/src/handlers/
-    // identity-enroll.ts. Returns user_jwt + creds_file_content + broker_url
-    // + workspace_id + org_id + role + human_did + expires_at.
+    // Server-of-truth: the deployed auth-issuer's identity-enroll handler.
+    // Returns user_jwt + creds_file_content + broker_url + workspace_id
+    // + org_id + role + human_did + expires_at.
     const { fetch, calls } = makeFetch([
       new Response(
         JSON.stringify({

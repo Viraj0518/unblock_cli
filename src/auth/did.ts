@@ -2,9 +2,8 @@
  * did:key minting — Ed25519 keypair → did:key:z6Mk... encoding.
  *
  * Uses `globalThis.crypto.subtle` (WebCrypto) for the keypair so the module
- * runs anywhere a Web-shaped crypto exists (Node 22, edge, Deno). Same
- * algorithm as scripts/identity/persona_nats.py — both produce did:key:z6Mk*
- * identifiers for the same Ed25519 public key.
+ * runs anywhere a Web-shaped crypto exists (Node 22, edge, Deno). Produces a
+ * standard `did:key:z6Mk*` identifier for the Ed25519 public key.
  *
  * Encoding (per W3C did:key spec, multibase + multicodec):
  *   prefix:   0xed 0x01     (multicodec for Ed25519 public key)

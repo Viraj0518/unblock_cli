@@ -35,14 +35,10 @@
  * 2026-05-27 enrollment contract fix: previously the CLI sent the invite
  * code as a JSON body field (`invite_code`) and parsed the response as
  * `{nats_creds, nats_url, name}`. The deployed auth-issuer at
- * auth.kaeva.app (sourced from unblock-v02-mig/services/auth-issuer/src/
- * handlers/identity-enroll.ts, authored 2026-05-18) expects the code as
- * an `X-Invite-Code` header, body `{human_did, ed25519_pubkey_hex,
- * agent_name}`, and returns `{user_jwt, creds_file_content, broker_url, ...,
- * role, human_did}`.
- * The CLI was authored 5 days after the server with stale wire docs and
- * never actually round-tripped against the live surface. See PR description
- * for the full diagnosis. Test pin: tests/sdk/http-substrate.test.ts.
+ * auth.kaeva.app expects the code as an `X-Invite-Code` header, body
+ * `{human_did, ed25519_pubkey_hex, agent_name}`, and returns
+ * `{user_jwt, creds_file_content, broker_url, ..., role, human_did}`.
+ * Test pin: tests/sdk/http-substrate.test.ts.
  */
 
 import type {
@@ -76,10 +72,10 @@ export const DEFAULT_AUTH_URL = 'https://auth.kaeva.app';
  * `remember`/`query` for every working persona. Reverted to the raw EF, which is
  * proven (remember→query round-trips at score 1.0 with the persona key).
  *
- * FOLLOW-UP (substrate-owner / Viraj): make `api.kaeva.app` proxy to this EF AND
- * accept the same issued keys; then flip this default back to api.kaeva.app to
- * regain the move-without-re-release indirection. Until then the raw URL is the
- * honest, working default. Override anytime with UNBLOCK_SUBSTRATE_URL.
+ * FOLLOW-UP: make `api.kaeva.app` proxy to this EF AND accept the same issued
+ * keys; then flip this default back to api.kaeva.app to regain the
+ * move-without-re-release indirection. Until then the raw URL is the honest,
+ * working default. Override anytime with UNBLOCK_SUBSTRATE_URL.
  */
 export const DEFAULT_SUBSTRATE_URL =
   'https://wzqkolqxtmqdptwchrkl.supabase.co/functions/v1/unblock-api';
@@ -122,8 +118,7 @@ export function createHttpSubstrateFactory(
 
       return {
         async enroll(input): Promise<EnrollResult> {
-          // Server contract (unblock-v02-mig/services/auth-issuer/src/handlers/
-          // identity-enroll.ts): the invite code is a credential and travels
+          // Server contract: the invite code is a credential and travels
           // in the X-Invite-Code header, NOT a body field. The body carries
           // only the new member's identity material, including the requested
           // display handle for canonical chat_name derivation.

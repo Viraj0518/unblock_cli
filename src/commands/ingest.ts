@@ -4,16 +4,14 @@
  *                       [--dry-run] [--concurrency=N]
  *                       [--continue-on-error]`
  *
- * Bulk-load a file or directory of files into the org-brain. Walks the
+ * Bulk-load a file or directory of files into the substrate. Walks the
  * filesystem, chunks each file via substrate's readers + chunker, then
  * sends each chunk through the same `remember` write path used by single-
  * block `unblock remember`.
  *
- * Why this exists (org-brain context):
- *   The org-brain is amnesiac on day 1 unless we can pre-load Viraj's
- *   existing Claude conversation history + memory files. This is the
- *   surface that makes that possible. Critical for YC demo
- *   (project_unblock_yc_demo_priority_20260524).
+ * Why this exists:
+ *   The substrate starts empty; this surface lets you pre-load existing
+ *   conversation history and notes so context is available from day one.
  *
  * Reader dispatch is by file extension, falling back to `--format`. The
  * full set of supported formats is whatever substrate's `knownReaderNames`

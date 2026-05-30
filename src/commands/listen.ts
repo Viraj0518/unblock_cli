@@ -349,7 +349,7 @@ function resolveSubject(
   // normalize subscribes to a different subject than current senders publish
   // to. That mismatch was the 2026-05-28 P1 root cause for `--since 30m
   // --timeout 15` emitting 0 events on a legacy mixed-case persona
-  // (`UNBLOCK_CHAT_NAME=Viraj-Alpha`): the JetStream consumer's
+  // (`UNBLOCK_CHAT_NAME=My-Agent`): the JetStream consumer's
   // `filter_subject` was mixed-case while every retained message in the
   // 30-day window was published to the lowercased subject.
   //

@@ -9,9 +9,8 @@
  *      `<repo>/dist/index.js`).
  *   2. `UNBLOCK_SUBSTRATE_MODULE` env (a bare module specifier or path,
  *      passed directly to `import()`).
- *   3. Sibling polyrepo at `../unblock_substrate/dist/index.js` relative
- *      to this file (the canonical local-dev layout per
- *      `reference_unblock_polyrepo_paths`).
+ *   3. Sibling package at `../unblock_substrate/dist/index.js` relative
+ *      to this file (the canonical local-dev layout).
  *
  * If none resolve, throws a clear error telling the user how to wire it.
  * Tests pass `deps.substrateIngest` directly and never call this.

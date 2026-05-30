@@ -1,17 +1,13 @@
 /**
  * Wire format — NATS subjects + JSON envelope.
  *
- * Subject builders match unblock_protocol's chat*Subject functions byte-for-byte.
- * Vendored here so the CLI doesn't take a hard local-path dep on a sibling
- * polyrepo that isn't published yet (per AGENTS.md §3 boundary contract,
- * which permits @unblock/protocol but it isn't on npm in Stage 2).
+ * Subject builders match the shared `@unblock/protocol` chat*Subject
+ * functions byte-for-byte. Vendored here so the CLI doesn't take a hard
+ * dep on a package that isn't published to npm yet (per AGENTS.md §3
+ * boundary contract).
  *
- * TODO (Stage 3): once `unblock_protocol` publishes to npm, replace these
- * with `import { chatFirehoseSubject, ... } from "unblock_protocol"`.
- *
- * Source: unblock_protocol/src/subjects/index.ts (chatFirehoseSubject etc.)
- *         + unblock-v02-mig/packages/unblock-cli/src/commands/chat.ts
- *           (envelope shape — must match scripts/identity/persona_nats.py).
+ * TODO: once `@unblock/protocol` publishes to npm, replace these with
+ * `import { chatFirehoseSubject, ... } from "@unblock/protocol"`.
  */
 
 import { createHash } from 'node:crypto';
@@ -24,10 +20,10 @@ const chatPrefix = (workspaceId: string): string => `unblock.chat.ws.${workspace
 /**
  * Canonicalize a chat handle to the form used on the wire.
  *
- * NATS subjects are case-sensitive (`unblock.chat.ws.<ws>.to.Viraj-Alpha` and
- * `...to.viraj-alpha` are DIFFERENT subjects). On 2026-05-28 a controlled
- * probe proved that sending to mixed-case `Viraj-Alpha` silently dropped
- * because the listener was subscribed under the lowercase `viraj-alpha` that
+ * NATS subjects are case-sensitive (`unblock.chat.ws.<ws>.to.My-Agent` and
+ * `...to.my-agent` are DIFFERENT subjects). On 2026-05-28 a controlled
+ * probe proved that sending to a mixed-case handle silently dropped
+ * because the listener was subscribed under the lowercase handle that
  * the auth-issuer minted into the persona's `comms-v3.env`. No error, no
  * warning — worst kind of bug.
  *

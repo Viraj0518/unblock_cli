@@ -25,10 +25,9 @@ import type { PersonaIdentity } from '../auth/persona-store.js';
 // ─── Comms — NATS-level surface used by chat/say/dm/ask/reply ────────────────
 
 /**
- * Plain-JSON ops envelope. Wire format matches v02-mig's `_chat_envelope`
- * and scripts/identity/persona_nats.py byte-for-byte (UTF-8 JSON over NATS).
- *
- * Source: ADR-115 §"Team chat (say/ask/dm/chat)".
+ * Plain-JSON ops envelope (UTF-8 JSON over NATS) for the team-chat verbs
+ * (say/ask/dm/chat). The wire format is shared with the Python fallback
+ * client byte-for-byte.
  */
 export interface ChatEnvelope {
   /** "say" | "dm" | "ask" | "reply" | other future kinds */
@@ -326,7 +325,7 @@ export interface SubstrateClient {
   forget(input: ForgetInput): Promise<ForgetResult>;
   /**
    * Enrollment endpoint — redeem an invite code for a User JWT + NATS creds.
-   * Matches v02-mig's POST /v1/identity/enroll.
+   * Matches the auth-issuer's POST /v1/identity/enroll.
    */
   enroll(input: {
     readonly inviteCode: string;

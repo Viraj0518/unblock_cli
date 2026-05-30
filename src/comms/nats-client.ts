@@ -19,8 +19,7 @@
  * an always-installed dep costs them nothing.
  *
  * Refuses to connect to localhost without `UNBLOCK_ALLOW_LOCAL_BROKER=1`
- * (per parent feedback_crash_early_on_default_broker_url.md — 3F-1 family
- * bug recurred 4× in 2026-05).
+ * (crash-early: a silent fallback to a local broker URL is a footgun).
  */
 
 import { readFile } from 'node:fs/promises';
@@ -164,7 +163,7 @@ export class BrokerUnreachableError extends Error {
  * Narrow the `nats` package's NatsConnection (a superset with many methods we
  * don't use) to our minimal structural `NatsConnection`. We verify the exact
  * methods we call exist at runtime, then narrow — no blind `as unknown as`
- * cast (per AGENTS.md rule 4 / feedback_honest_typescript_fixes). If the
+ * cast (per AGENTS.md rule 4: honest types only). If the
  * `nats` API ever drops one of these, this throws a clear error here instead
  * of a `TypeError: x is not a function` deep in the consume loop.
  */

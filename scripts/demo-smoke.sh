@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# yc-demo-smoke.sh — YC lock-in test (LT): cross-AI-session memory persistence.
+# demo-smoke.sh — cross-AI-session memory persistence smoke test.
 #
-# THE DEMO LOOP, proven against PROD:
+# THE DEMO LOOP, proven against the live deployment:
 #   1. `unblock remember "<unique marker>"`  -> writes a block to the substrate
 #   2. (fresh process = a brand-new "session"/agent invocation)
 #      `unblock query "<marker>"`            -> recalls the SAME block id + content
 #
-# This is the heart of the YC pitch: an org-brain that persists context across
-# AI sessions and machines. remember/query route through the substrate HTTP API
-# (Supabase `unblock-api` edge function, X-API-Key auth) — NOT the NATS broker —
-# so this is testable even while the broker is down.
+# This is the core claim: context persists across AI sessions and machines.
+# remember/query route through the substrate HTTP API (the `unblock-api` edge
+# function, X-API-Key auth) — NOT the NATS broker — so this is testable even
+# while the broker is down.
 #
 # What this proves / does NOT prove:
 #   PROVEN  : same-API-key cross-SESSION recall (write in one process, read in a
@@ -53,7 +53,7 @@ fail() {
   red "FAIL: $*"
   echo
   red "=============================================================="
-  red " YC DEMO SMOKE: FAIL — cross-AI-session persistence is BROKEN"
+  red " DEMO SMOKE: FAIL — cross-AI-session persistence is BROKEN"
   red "=============================================================="
   exit 1
 }
@@ -81,7 +81,7 @@ run_timed() {
 }
 
 echo "=============================================================="
-echo " YC DEMO SMOKE — cross-AI-session memory persistence (PROD)"
+echo " DEMO SMOKE — cross-AI-session memory persistence"
 echo "=============================================================="
 echo
 
@@ -95,8 +95,8 @@ echo "$WHOAMI_OUT" | sed 's/^/  /'
 echo
 
 # ---- unique marker (safe to re-run) -----------------------------------------
-MARKER="YC-SMOKE-$(date +%s)-$$-${RANDOM}-${RANDOM}"
-CONTENT="yc demo smoke marker ${MARKER} :: the unblock org-brain persists context across ai sessions"
+MARKER="DEMO-SMOKE-$(date +%s)-$$-${RANDOM}-${RANDOM}"
+CONTENT="demo smoke marker ${MARKER} :: the unblock substrate persists context across ai sessions"
 info "marker:  ${MARKER}"
 echo
 
@@ -166,7 +166,7 @@ fi
 echo
 
 green "=============================================================="
-green " YC DEMO SMOKE: PASS"
+green " DEMO SMOKE: PASS"
 green "   wrote ${BLOCK_ID}, recalled it from a fresh process,"
 green "   top-hit + content matched. Cross-AI-session persistence WORKS."
 green "=============================================================="

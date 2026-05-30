@@ -149,7 +149,7 @@ export function buildProgram(): Command {
     .description(
       'Direct message a recipient (mirrored to firehose so humans can observe). ' +
         'Recipient name is case-normalized (lowercased) to match enrollment — ' +
-        'NATS subjects are case-sensitive, so `Viraj-Alpha` and `viraj-alpha` would otherwise be different inboxes. ' +
+        'NATS subjects are case-sensitive, so `My-Agent` and `my-agent` would otherwise be different inboxes. ' +
         'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/.',
     )
     .option('--name <handle>', 'display name')
@@ -503,7 +503,7 @@ export function buildProgram(): Command {
       'Send a direct message. With --ack, waits for recipient acknowledgement ' +
         'before exiting. ' +
         'Recipient name is case-normalized (lowercased) to match enrollment — ' +
-        'NATS subjects are case-sensitive, so `Viraj-Alpha` and `viraj-alpha` would otherwise be different inboxes. ' +
+        'NATS subjects are case-sensitive, so `My-Agent` and `my-agent` would otherwise be different inboxes. ' +
         'Persona dir resolution: --persona NAME (preferred) > UNBLOCK_HOME env > default ~/.unblock/. ' +
         'Exit 0=ok, 2=ack-timeout, 1=error.',
     )

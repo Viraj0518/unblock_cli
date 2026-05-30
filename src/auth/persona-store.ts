@@ -105,12 +105,12 @@ export function v2EnvPath(): string {
 
 /**
  * Local persona identity. The DID is the persona's canonical name across
- * substrate, NATS, and FGA (per parent CLAUDE.md §"Identity convention").
+ * substrate, NATS, and authorization.
  */
 export interface PersonaIdentity {
   /** did:key:z6Mk... — minted on first `unblock login`. */
   readonly did: string;
-  /** Human-readable handle (e.g. "Viraj-Alpha"). */
+  /** Human-readable handle (e.g. "my-agent"). */
   readonly agentName: string;
   /** Hex-encoded Ed25519 public key derived from the DID. */
   readonly ed25519PublicKeyHex: string;
