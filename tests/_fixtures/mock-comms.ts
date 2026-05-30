@@ -35,6 +35,13 @@ export interface MockCommsState {
    * then waits for abort.
    */
   readonly jsFramesBySubject: Map<string, JetStreamFrame[]>;
+  /**
+   * When set, the mock JetStream `consume()` throws this error (simulates a
+   * missing server-side stream — e.g. "stream not found"). Used to exercise
+   * the listen/monitor graceful-degrade-to-live-tail path. Writable so a test
+   * can flip it on a shared state object.
+   */
+  jsConsumeError?: unknown;
 }
 
 export function createMockCommsFactory(state?: MockCommsState): {
@@ -146,6 +153,9 @@ function buildMockJetStream(state: MockCommsState): JetStream {
   return {
     consume(opts: JetStreamConsumeOptions): AsyncIterable<JetStreamFrame> {
       state.jsConsumeCalls.push(opts);
+      // Simulate a broker whose stream isn't provisioned: the real
+      // `@nats-io/jetstream` throws "stream not found" from consume setup.
+      if (state.jsConsumeError !== undefined) throw state.jsConsumeError;
       const frames = state.jsFramesBySubject.get(opts.filterSubject) ?? [];
       return {
         [Symbol.asyncIterator]: () => {

@@ -734,3 +734,71 @@ describe('runListen default durability', () => {
     expect(state.subscribers.size).toBeGreaterThan(0);
   });
 });
+
+// ─── graceful degrade: missing UNBLOCK_CHAT stream → live-tail fallback ───────
+//
+// 2026-05-29 P0: a RunPod broker restart dropped the server-side UNBLOCK_CHAT
+// JetStream stream, so the seamless-default durable consumer hard-failed with
+// "stream not found" and bare `unblock listen` exited 1 — comms receive was
+// dead. The user never asked for replay (the CLI chose durable), so a missing
+// stream must degrade to core-NATS live-tail, not hard-fail. Explicit
+// --since/--durable/--replay-all still surface the error (replay was asked
+// for and can't be honored).
+describe('runListen auto-durable stream-not-found fallback', () => {
+  it('falls back to live-tail when the UNBLOCK_CHAT stream is not provisioned', async () => {
+    const { factory, state } = createMockCommsFactory();
+    state.jsConsumeError = new Error('stream not found');
+
+    // Bare listen → seamless durable default → JS consume throws → fallback.
+    const result = await runListen({ commsFactory: factory }, { json: true, timeout: 0.1 });
+
+    // Tried JetStream exactly once, then degraded to a live-tail subscriber.
+    expect(state.jsConsumeCalls.length).toBe(1);
+    expect(state.subscribers.has('unblock.chat.ws.ws-default.to.viraj-alpha')).toBe(true);
+    // Clean exit (timeout), not a thrown error.
+    expect(result.exitReason).toBe('timeout');
+    expect(result.received).toBe(0);
+  });
+
+  it('still receives live messages after falling back to live-tail', async () => {
+    const { factory, state } = createMockCommsFactory();
+    state.jsConsumeError = new Error('stream not found');
+    const ctrl = new AbortController();
+
+    const listenPromise = runListen(
+      { commsFactory: factory, signal: ctrl.signal },
+      { json: true },
+    );
+
+    const subject = 'unblock.chat.ws.ws-default.to.viraj-alpha';
+    await waitForSubscriber(state, subject);
+
+    const subs = state.subscribers.get(subject);
+    if (subs) {
+      const frame = {
+        subject,
+        data: new TextEncoder().encode(JSON.stringify({ kind: 'dm', msg: 'after-fallback' })),
+      };
+      for (const cb of subs) cb(frame);
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    ctrl.abort();
+    const result = await listenPromise;
+
+    expect(result.received).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT fall back for an explicit --since (replay was requested)', async () => {
+    const { factory, state } = createMockCommsFactory();
+    state.jsConsumeError = new Error('stream not found');
+
+    await expect(
+      runListen({ commsFactory: factory }, { since: '1h', timeout: 0.05 }),
+    ).rejects.toThrow(/stream not found/);
+
+    // Attempted JetStream and did NOT open a live-tail subscriber.
+    expect(state.jsConsumeCalls.length).toBe(1);
+    expect(state.subscribers.size).toBe(0);
+  });
+});

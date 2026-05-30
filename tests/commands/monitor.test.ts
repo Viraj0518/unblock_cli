@@ -468,6 +468,43 @@ describe('runMonitor --durable', () => {
   });
 });
 
+// ─── graceful degrade: missing UNBLOCK_CHAT stream → live-tail fallback ───────
+//
+// Mirror of the listen.ts P0 fix (2026-05-29): a broker restart that drops the
+// server-side UNBLOCK_CHAT stream must NOT hard-fail the seamless-default
+// durable monitor — it degrades to core-NATS live-tail. Explicit replay flags
+// still surface a fatal (the caller asked for replay and it can't be honored).
+describe('runMonitor auto-durable stream-not-found fallback', () => {
+  it('falls back to live-tail when the UNBLOCK_CHAT stream is not provisioned', async () => {
+    const { factory, state } = createMockCommsFactory();
+    state.jsConsumeError = new Error('stream not found');
+
+    const result = await runMonitor({ commsFactory: factory }, { json: true, timeout: 0.1 });
+
+    // Tried JetStream once, then degraded to a live-tail subscriber.
+    expect(state.jsConsumeCalls.length).toBe(1);
+    expect(state.subscribers.has(INBOX_SUBJECT)).toBe(true);
+    // Clean exit (timeout), NOT fatal.
+    expect(result.exitReason).toBe('timeout');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('does NOT fall back for an explicit --since (replay requested) → fatal', async () => {
+    const { factory, state } = createMockCommsFactory();
+    state.jsConsumeError = new Error('stream not found');
+
+    const result = await runMonitor(
+      { commsFactory: factory },
+      { since: '1h', json: true, timeout: 0.05 },
+    );
+
+    expect(result.exitReason).toBe('fatal');
+    expect(result.exitCode).toBe(1);
+    expect(state.jsConsumeCalls.length).toBe(1);
+    expect(state.subscribers.size).toBe(0);
+  });
+});
+
 // ─── 7. Fatal envelope emitted on connection drop ───────────────────────────
 
 describe('runMonitor coverage guarantee (fatal envelope on failures)', () => {

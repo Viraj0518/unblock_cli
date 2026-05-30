@@ -226,113 +226,147 @@ export async function runListen(deps: ListenDeps, opts: ListenOptions): Promise<
     process.stderr.write(`[listen] subscribing to subject: ${subject} mode=${mode}\n`);
   }
 
-  if (replayMode !== null) {
-    const jsResult = await runJetStreamReplay({
-      client,
-      subject,
-      replayMode,
-      ...(durability.durableName !== undefined ? { durableName: durability.durableName } : {}),
-      ...(durability.resetDurable === true ? { resetDurable: true } : {}),
-      ...(opts.timeout !== undefined ? { timeoutSec: opts.timeout } : {}),
-      ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
-      handleFrame,
-      onTimedOut: () => {
-        timedOut = true;
-      },
-    });
-    // `received` is incremented by handleFrame against the runListen closure,
-    // not against runJetStreamReplay's local counter — return it here.
-    return { received, exitReason: jsResult.exitReason };
-  }
+  // Live-tail (core NATS) path, factored into a closure so the seamless
+  // auto-durable default can fall back to it when the server-side JetStream
+  // stream isn't provisioned. `--ephemeral` and the fallback both use it.
+  const runLiveTail = async (liveClient: CommsClient): Promise<ListenResult> => {
+    const sub = liveClient.subscribe(subject);
 
-  const sub = client.subscribe(subject);
-
-  // ── P0 defensive subscribe: legacy mixed-case chat_name ────────────────────
-  // Symmetric to the wire-side normalization in `resolveSubject`. With the
-  // 2026-05-28 fix, `subject` above is now the LOWERCASED form (matching
-  // what every current sender publishes to). If the persona's
-  // `UNBLOCK_CHAT_NAME` is still mixed-case in `comms-v3.env`, a legacy
-  // sender that hasn't picked up the normalization will publish to the
-  // mixed-case subject and we'd miss those messages — so we also subscribe
-  // to the as-loaded mixed-case variant as a transitional safety net.
-  // Operators see a one-shot WARN so they know to fix the underlying
-  // chat_name (re-mint, or hand-edit the env file).
-  let auxSub: Subscription | undefined;
-  if (
-    opts.subject === undefined &&
-    opts.channel === undefined &&
-    cfg.chatName !== undefined &&
-    cfg.chatName !== normalizeChatName(cfg.chatName)
-  ) {
-    const auxSubject = `unblock.chat.ws.${cfg.workspaceId}.to.${cfg.chatName}`;
-    process.stderr.write(
-      `WARN: chat_name "${cfg.chatName}" has uppercase chars — NATS subjects are case-sensitive, ` +
-      `messages may be dropped. Also subscribing to "${auxSubject}" as a transitional safety net for ` +
-      `legacy senders that haven't been updated to lowercase recipients. ` +
-      `Re-run \`unblock login <new-invite-code>\` (or hand-edit ~/.unblock/comms-v3.env) to lowercase it.\n`,
-    );
-    auxSub = client.subscribe(auxSubject);
-  }
-
-  // Use an AbortController-like mechanism for timeout
-  const stopPromise = new Promise<'timeout' | 'aborted'>((resolve) => {
-    if (opts.timeout !== undefined && opts.timeout > 0) {
-      timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        sub.unsubscribe();
-        if (auxSub !== undefined) auxSub.unsubscribe();
-        resolve('timeout');
-      }, opts.timeout * 1000);
+    // ── P0 defensive subscribe: legacy mixed-case chat_name ──────────────────
+    // Symmetric to the wire-side normalization in `resolveSubject`. With the
+    // 2026-05-28 fix, `subject` above is now the LOWERCASED form (matching
+    // what every current sender publishes to). If the persona's
+    // `UNBLOCK_CHAT_NAME` is still mixed-case in `comms-v3.env`, a legacy
+    // sender that hasn't picked up the normalization will publish to the
+    // mixed-case subject and we'd miss those messages — so we also subscribe
+    // to the as-loaded mixed-case variant as a transitional safety net.
+    // Operators see a one-shot WARN so they know to fix the underlying
+    // chat_name (re-mint, or hand-edit the env file).
+    let auxSub: Subscription | undefined;
+    if (
+      opts.subject === undefined &&
+      opts.channel === undefined &&
+      cfg.chatName !== undefined &&
+      cfg.chatName !== normalizeChatName(cfg.chatName)
+    ) {
+      const auxSubject = `unblock.chat.ws.${cfg.workspaceId}.to.${cfg.chatName}`;
+      process.stderr.write(
+        `WARN: chat_name "${cfg.chatName}" has uppercase chars — NATS subjects are case-sensitive, ` +
+        `messages may be dropped. Also subscribing to "${auxSubject}" as a transitional safety net for ` +
+        `legacy senders that haven't been updated to lowercase recipients. ` +
+        `Re-run \`unblock login <new-invite-code>\` (or hand-edit ~/.unblock/comms-v3.env) to lowercase it.\n`,
+      );
+      auxSub = liveClient.subscribe(auxSubject);
     }
-    if (deps.signal !== undefined) {
-      if (deps.signal.aborted) {
-        sub.unsubscribe();
-        if (auxSub !== undefined) auxSub.unsubscribe();
-        resolve('aborted');
-      } else {
-        deps.signal.addEventListener('abort', () => {
+
+    // Use an AbortController-like mechanism for timeout
+    const stopPromise = new Promise<'timeout' | 'aborted'>((resolve) => {
+      if (opts.timeout !== undefined && opts.timeout > 0) {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          sub.unsubscribe();
+          if (auxSub !== undefined) auxSub.unsubscribe();
+          resolve('timeout');
+        }, opts.timeout * 1000);
+      }
+      if (deps.signal !== undefined) {
+        if (deps.signal.aborted) {
           sub.unsubscribe();
           if (auxSub !== undefined) auxSub.unsubscribe();
           resolve('aborted');
-        }, { once: true });
+        } else {
+          deps.signal.addEventListener('abort', () => {
+            sub.unsubscribe();
+            if (auxSub !== undefined) auxSub.unsubscribe();
+            resolve('aborted');
+          }, { once: true });
+        }
       }
-    }
-  });
+    });
 
-  const pumpOne = async (s: Subscription): Promise<void> => {
-    try {
-      for await (const frame of s) {
-        const carryOn = handleFrame(frame);
-        if (!carryOn) break;
+    const pumpOne = async (s: Subscription): Promise<void> => {
+      try {
+        for await (const frame of s) {
+          const carryOn = handleFrame(frame);
+          if (!carryOn) break;
+        }
+      } catch {
+        // Iterator closed (unsubscribed) — normal shutdown
       }
+    };
+
+    const listenPromise: Promise<void> = auxSub !== undefined
+      ? Promise.all([pumpOne(sub), pumpOne(auxSub)]).then(() => undefined)
+      : pumpOne(sub);
+
+    const raceResult = await Promise.race([
+      stopPromise,
+      listenPromise.then(() => 'done' as const),
+    ]);
+
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
+    try {
+      await liveClient.close();
     } catch {
-      // Iterator closed (unsubscribed) — normal shutdown
+      /* best-effort */
     }
+
+    exitReason =
+      raceResult === 'timeout' ? 'timeout'
+      : raceResult === 'aborted' ? 'aborted'
+      : 'signal';
+
+    return { received, exitReason };
   };
 
-  const listenPromise: Promise<void> = auxSub !== undefined
-    ? Promise.all([pumpOne(sub), pumpOne(auxSub)]).then(() => undefined)
-    : pumpOne(sub);
-
-  const raceResult = await Promise.race([
-    stopPromise,
-    listenPromise.then(() => 'done' as const),
-  ]);
-
-  if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-
-  try {
-    await client.close();
-  } catch {
-    /* best-effort */
+  if (replayMode !== null) {
+    try {
+      const jsResult = await runJetStreamReplay({
+        client,
+        subject,
+        replayMode,
+        ...(durability.durableName !== undefined ? { durableName: durability.durableName } : {}),
+        ...(durability.resetDurable === true ? { resetDurable: true } : {}),
+        ...(opts.timeout !== undefined ? { timeoutSec: opts.timeout } : {}),
+        ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+        handleFrame,
+        onTimedOut: () => {
+          timedOut = true;
+        },
+      });
+      // `received` is incremented by handleFrame against the runListen closure,
+      // not against runJetStreamReplay's local counter — return it here.
+      return { received, exitReason: jsResult.exitReason };
+    } catch (err) {
+      // Graceful degrade: the seamless-default durable consumer needs the
+      // server-side UNBLOCK_CHAT stream. If it isn't provisioned (e.g. the
+      // broker restarted without a persisted JetStream store), the user never
+      // asked for replay — so fall back to core-NATS live-tail instead of
+      // hard-failing. Explicit --since/--durable/--replay-all (auto !== true)
+      // surface the error: the caller asked for replay and we can't honor it.
+      // runJetStreamReplay already closed `client` on error, so reconnect for
+      // the live-tail subscription.
+      if (durability.auto === true && isStreamNotFoundError(err)) {
+        if (process.env['UNBLOCK_LISTEN_QUIET'] !== '1') {
+          process.stderr.write(
+            `[listen] WARN: durable replay unavailable — the UNBLOCK_CHAT JetStream ` +
+            `stream is not provisioned on the broker. Falling back to live-tail; ` +
+            `messages sent while this listener is offline will be dropped until the ` +
+            `stream is restored (ops: scripts/nats/apply-streams.mjs --only UNBLOCK_CHAT).\n`,
+          );
+        }
+        const liveClient = await deps.commsFactory.connect({
+          url: cfg.natsUrl,
+          ...(cfg.credsPath !== undefined ? { credsPath: cfg.credsPath } : {}),
+        });
+        return await runLiveTail(liveClient);
+      }
+      throw err;
+    }
   }
 
-  exitReason =
-    raceResult === 'timeout' ? 'timeout'
-    : raceResult === 'aborted' ? 'aborted'
-    : 'signal';
-
-  return { received, exitReason };
+  return await runLiveTail(client);
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -360,6 +394,20 @@ function resolveSubject(
   return `unblock.chat.ws.${cfg.workspaceId}.to.${chatName}`;
 }
 
+/**
+ * True when an error means the target JetStream STREAM does not exist on the
+ * broker — distinct from a missing CONSUMER (which the CLI creates itself).
+ * `@nats-io/jetstream` surfaces this as "stream not found" (JS API err_code
+ * 10059). We degrade the seamless-default durable consumer to live-tail on
+ * exactly this error; everything else propagates.
+ */
+export function isStreamNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/stream not found/i.test(msg)) return true;
+  const rec = err as { api_error?: { err_code?: number }; code?: string } | null;
+  return rec?.api_error?.err_code === 10059;
+}
+
 /** Minimal option surface shared by listen + monitor for durability resolution. */
 export interface DurabilityOpts {
   readonly ephemeral?: boolean;
@@ -374,6 +422,14 @@ export interface ResolvedDurability {
   readonly replayMode: DeliverPolicy | null;
   readonly durableName?: string;
   readonly resetDurable?: boolean;
+  /**
+   * True only for the SEAMLESS-default durable consumer (no explicit
+   * --since/--durable/--replay-all). The caller didn't ask for replay — the
+   * CLI chose it — so if the server-side stream is missing it's safe to
+   * degrade to live-tail rather than hard-fail. Explicit replay flags
+   * (auto undefined) must surface the error instead.
+   */
+  readonly auto?: boolean;
 }
 
 /**
@@ -414,8 +470,14 @@ export function resolveDurability(
   }
   if (durableName !== undefined) return { replayMode: { kind: 'all' }, ...durableBits };
 
-  // Default: seamless durable consumer.
-  return { replayMode: { kind: 'new' }, durableName: autoDurableName(subject, chatName) };
+  // Default: seamless durable consumer. `auto: true` marks this as
+  // CLI-chosen (not user-requested), so a missing server-side stream
+  // degrades to live-tail instead of hard-failing.
+  return {
+    replayMode: { kind: 'new' },
+    durableName: autoDurableName(subject, chatName),
+    auto: true,
+  };
 }
 
 /**
@@ -563,6 +625,10 @@ async function runJetStreamReplay(d: JetStreamReplayDeps): Promise<ListenResult>
     }
   } catch (err) {
     if (!abortCtrl.signal.aborted) {
+      // Clear our own timer before bailing so a caller that recovers from this
+      // error (e.g. the auto-durable → live-tail fallback) doesn't inherit a
+      // stale timeout that would later flip the shared `timedOut` flag.
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       try {
         await d.client.close();
       } catch {
